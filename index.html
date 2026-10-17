@@ -2418,6 +2418,7 @@ async function loadDB(){
       await syncLoadBindings();
       await GCfg.load();
       await ODCfg.load();
+      setTimeout(()=>{ try{ odConsumeSharedConfig().catch(e=>console.warn('[od-cfg]',e)); }catch(e){} }, 600);   /* 設定の共有リンクを開いたとき */
       const all = await syncLoadAll('idb');   /* 既存の世界はすべて idb の世界として読む */
       all.forEach(it=>{ try{ const o=it.doc; const sv0=Number(o.schemaVersion)||0; const w = normalizeWorld(o); DB.worlds[w.id]=w; syncBaseline(w); syncAttach(w.id,it.adapterId,it.ref,it.etag); if(sv0<syncSchemaVersion()) DB.metaDirty.add(w.id); /* 移行した世界は次の保存で schemaVersion を書き戻す */ }catch(e){ console.error(e); } });
       DB.currentWorldId = await IDB.get('kv','current') || null;
@@ -15016,6 +15017,35 @@ function odShowError(e){ try{ const box=document.getElementById('odErrBox'); if(
 
 /* ---------- 画面(マニフェストから生成) ---------- */
 function odGuideSteps(){ const ru=ODAuth.redirectUri(); return OD_MANIFEST.setupSteps.map(s=>Object.assign({},s,{vals:s.vals.map(v=>[v[0], v[1]==='@redirect' ? (/^https?:/.test(location.protocol)?ru:'(http:// または https:// で開いたこのページのURL)') : v[1]])})); }
+
+/* ---------- 設定の共有リンク(メンバーが自分でアプリ登録をしなくて済むように) ----------
+   ・リンクに入れるのは、クライアントID と 上限(MB)だけ。トークン・検証子・シークレットは入れない
+   ・設定は URL の # 以降(フラグメント)に入れる。サーバーには送られない
+   ・受け取った側は、確認ダイアログで「はい」を選んだときだけ設定する。読み込んだ直後に URL から消す */
+const OD_CFG_HASH='atlas-od-cfg';
+function odCfgLinkMake(){
+  const c=ODCfg.v||{}; if(!c.clientId) throw atlasErr('save_failed',{source:'config',codes:['no_client_id']},'先にクライアントIDを設定してください');
+  if(!/^https?:/.test(location.protocol)) throw atlasErr('save_failed',{source:'config',codes:['local_origin']},'この開き方(file://)ではリンクを作れません。http:// または https:// で配信した場所から開いてください');
+  const payload={v:1, clientId:String(c.clientId), maxDocBytes:Number(c.maxDocBytes)||50, verified:ODCfg.status()==='valid'};
+  return location.origin+location.pathname+'#'+OD_CFG_HASH+'='+odB64url(new TextEncoder().encode(JSON.stringify(payload)));
+}
+function odCfgLinkParse(hash){
+  const m=new RegExp('^#?'+OD_CFG_HASH+'=([A-Za-z0-9_-]+)$').exec(String(hash||'')); if(!m) return null;
+  try{ let b=m[1].replace(/-/g,'+').replace(/_/g,'/'); while(b.length%4) b+='='; const o=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b),ch=>ch.charCodeAt(0))));
+    if(!o || o.v!==1) return null; const cfg={clientId:String(o.clientId||'').trim(), maxDocBytes:Number(o.maxDocBytes)||50};   /* 許可した項目だけ取り出す(他は捨てる) */
+    if(ODCfg.validate(cfg).length) return null; return {cfg, verified:o.verified===true};
+  }catch(e){ return null; }
+}
+async function odConsumeSharedConfig(){
+  const h=location.hash; if(!h || h.indexOf(OD_CFG_HASH+'=')<0) return null;
+  try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){}
+  const r=odCfgLinkParse(h); if(!r){ atlasShowError(atlasErr('not_a_world',{source:'config',codes:['bad_config_link']},'設定のリンクを読み取れませんでした'),'save_failed'); return {rejected:true}; }
+  const cur=ODCfg.v&&ODCfg.v.clientId; if(cur===r.cfg.clientId && Number(ODCfg.v.maxDocBytes)===r.cfg.maxDocBytes) return {same:true};
+  const a=await ATLAS_UI.ask({title:'OneDrive の設定リンク', body:'<p>共有された設定を、この端末に入れますか。</p><p>クライアントID: <code>'+esc(r.cfg.clientId)+'</code><br>1世界の上限: '+r.cfg.maxDocBytes+' MB</p>'+(cur?'<p><b>いまの設定(クライアントID: '+esc(cur)+')は置き換わります。</b></p>':'')+'<p style="font-size:12px;opacity:.8">入るのはこの2つだけです。ログインは、あなた自身のMicrosoftアカウントで行います。</p>', buttons:[{label:'設定する',value:'yes'},{label:'やめる',value:'no'}]});
+  if(a!=='yes') return {declined:true};
+  await ODCfg.save(r.cfg, r.verified?'valid':'unverified');
+  toast('OneDrive の設定を入れました。「OneDriveにログイン」を押してください'); return {applied:true, state:ODCfg.status()};
+}
 function openOneDriveGuide(focusStep){
   const steps=odGuideSteps();
   const row=(lab,val,ix,j)=>`<div style="display:flex;gap:6px;align-items:center;margin:3px 0"><span style="min-width:9em;font-size:12px;color:var(--muted)">${esc(lab)}</span><code style="flex:1;word-break:break-all">${esc(val)}</code><button class="btn small od-copy" data-v="${esc(val)}">コピー</button></div>`;
@@ -15042,7 +15072,8 @@ function renderOneDrivePanel(){
       ${localOrigin?'<div style="color:var(--danger);font-size:12px;margin-top:3px">このファイルを直接開いている(file://)ため、Microsoftのログインは使えません。http:// または https:// で配信した場所から開いてください。</div>':''}</div>
     <div class="formgrid">${fields}</div>
     <div id="odFormErr" style="color:var(--danger);font-size:12.5px;margin:4px 0"></div>
-    <div class="mini-btn-row"><button class="btn primary" id="odTestBtn">保存して接続確認</button> <button class="btn" id="odDelBtn">設定を削除</button></div>
+    <div class="mini-btn-row"><button class="btn primary" id="odTestBtn">保存して接続確認</button> <button class="btn" id="odDelBtn">設定を削除</button> <button class="btn" id="odShareCfg" data-tip="メンバー用の設定リンク|クライアントIDと上限だけを含むリンクを作ります。メンバーが各自でアプリ登録をする必要がなくなります">メンバー用の設定リンクを作る</button></div>
+<div id="odShareBox" style="margin:6px 0;display:none"><div style="display:flex;gap:6px"><input id="odShareLink" readonly style="flex:1"><button class="btn small" id="odShareCopy">コピー</button></div><div class="hint" style="font-size:12px">リンクに入るのはクライアントIDと上限(MB)だけです(トークン類は含みません)。このリンクを開いた人が、確認のうえ設定を入れられます。</div></div>
     <ol id="odStages" style="list-style:none;padding:0;margin:8px 0;font-size:13px"></ol>
     <div id="odDecide" style="display:none;margin:6px 0"><span style="font-size:12.5px">通らない段階がありました。</span> <button class="btn small" id="odSaveUnv">未検証として保存</button> <button class="btn small" id="odNoSave">保存しない</button></div>
     <div id="odErrBox" style="margin:6px 0;font-size:12.5px"></div><hr style="opacity:.3">
@@ -15062,6 +15093,8 @@ function renderOneDrivePanel(){
   $('odRedirectCopy').addEventListener('click',()=>gCopy(ru));
   $('odLogin').addEventListener('click',async(ev)=>{ $('odErrBox').innerHTML=''; try{ await ODAuth.login(ev); toast('ログインしました'); }catch(e){ odShowError(e); } refresh(); });
   $('odLogout').addEventListener('click',async()=>{ await ODAuth.logout(); refresh(); });
+  $('odShareCfg').addEventListener('click',()=>{ try{ const l=odCfgLinkMake(); $('odShareLink').value=l; $('odShareBox').style.display='block'; }catch(e){ atlasShowError(e,'save_failed'); } });
+  $('odShareCopy').addEventListener('click',()=>gCopy($('odShareLink').value));
   $('odDelBtn').addEventListener('click',async()=>{ if(!confirm('OneDrive連携の設定(アプリケーション(クライアント)ID)とログインの状態を、この端末から削除します。よろしいですか?')) return; await ODCfg.clear(); toast('設定を削除しました'); renderOneDrivePanel(); });
   $('odListBtn').addEventListener('click',async()=>{ $('odErrBox').innerHTML=''; if(ODAuth.state!=='in'){ toast('先にOneDriveにログインしてください','err'); $('odLogin').focus(); return; }
     try{ const ad=SyncAdapters.get('onedrive'); const l=await ad.list(); $('odList').innerHTML=(l.length?l.map((s,i)=>`<li style="font-size:12.5px">${esc(s.name)} <button class="btn small od-pick" data-i="${i}">開く</button></li>`).join(''):'<li class="hint" style="font-size:12px;list-style:none">世界のファイルはありません。</li>')+(ad.sharedStatus&&ad.sharedStatus!=='ok'?'<li class="hint" style="font-size:12px;list-style:none">共有された項目の一覧は取得できませんでした。共有リンクから開いてください。</li>':'');
