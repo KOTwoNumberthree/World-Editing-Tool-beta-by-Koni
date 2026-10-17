@@ -2419,7 +2419,7 @@ async function loadDB(){
       await GCfg.load();
       await ODCfg.load();
       const all = await syncLoadAll('idb');   /* 既存の世界はすべて idb の世界として読む */
-      all.forEach(it=>{ try{ const o=it.doc; const sv0=Number(o.schemaVersion)||0; const w = normalizeWorld(o); DB.worlds[w.id]=w; syncBaseline(w); syncAttach(w.id,it.adapterId,it.ref,it.etag); if(sv0<syncSchemaVersion()) DB.metaDirty.add(w.id); /* 移行した世界は次の保存で schemaVersion を書き戻す */ }catch(e){ console.error(e); } });
+      for(const it of all){ try{ const doc=it.doc; const o=syncWorldOfDoc(doc); const sv0=Number(o.schemaVersion)||0; const w = normalizeWorld(o); DB.worlds[w.id]=w; if(doc && doc.format==='atlas-v2' && doc.tiles) await syncWriteTilesToIdb(w.id,doc.tiles); syncBaseline(w); syncAttach(w.id,it.adapterId,it.ref,it.etag); if(sv0<syncSchemaVersion()) DB.metaDirty.add(w.id); /* 移行した世界は次の保存で schemaVersion を書き戻す */ }catch(e){ console.error(e); } }
       DB.currentWorldId = await IDB.get('kv','current') || null;
       had = Object.keys(DB.worlds).length>0;
       await refreshBackups();
@@ -8781,6 +8781,43 @@ async function exportWorldJson(w){
   try{ const json=JSON.stringify(syncExportDoc(w,tiles)); download((w.name||'world')+'.json', json, 'application/json'); toast('書き出しました ('+(json.length/1048576).toFixed(1)+' MB)'); }
   catch(e){ console.error(e); toast('書き出しに失敗しました(データが大きすぎます)。解像度を下げるか、バックアップ機能をご利用ください','err'); }
 }
+function syncWorldOfDoc(doc){ return doc && typeof doc==='object' && doc.format==='atlas-v2' && doc.world && typeof doc.world==='object' ? doc.world : doc; }
+function syncDocTiles(doc){ return doc && typeof doc==='object' && doc.tiles && typeof doc.tiles==='object' ? doc.tiles : null; }
+function syncLoadTiles(worldId, tiles){
+  if(!tiles || typeof tiles!=='object') return;
+  for(const sid of Object.keys(tiles)){
+    const layers=tiles[sid]; if(!layers || typeof layers!=='object') continue;
+    for(const l of LAYER_IDS){
+      const o=layers[l]; if(!o || typeof o!=='object') continue;
+      const r=Store.raw[sid]||(Store.raw[sid]={}); const m=r[l]||(r[l]=new Map());
+      for(const k of Object.keys(o)){
+        const item=o[k]; if(!item || typeof item.b!=='string' || !Number.isFinite(Number(k))) continue;
+        const u=b64ToBytes(item.b); if(u.byteLength%LAYER_DEF[l].ctor.BYTES_PER_ELEMENT!==0) throw new Error('タイルデータの長さが不正です: '+sid+'/'+l+'/'+k);
+        const data=item.k===1 ? new Uint32Array(u.buffer,u.byteOffset,u.byteLength/4) : new LAYER_DEF[l].ctor(u.buffer,u.byteOffset,u.byteLength/LAYER_DEF[l].ctor.BYTES_PER_ELEMENT);
+        m.set(Number(k),{k:item.k,d:data});
+      }
+    }
+  }
+}
+async function syncWriteTilesToIdb(worldId, tiles){
+  if(!IDB.ok || !tiles || typeof tiles!=='object') return;
+  const puts=[];
+  for(const sid of Object.keys(tiles)){
+    const layers=tiles[sid]||{};
+    for(const l of LAYER_IDS){
+      const o=layers[l]; if(!o) continue;
+      for(const k of Object.keys(o)){
+        const item=o[k]; if(!item || typeof item.b!=='string' || !Number.isFinite(Number(k))) continue;
+        const u=b64ToBytes(item.b), C=LAYER_DEF[l].ctor, bytes=C.BYTES_PER_ELEMENT;
+        if(u.byteLength%bytes!==0) throw new Error('タイルデータの長さが不正です: '+sid+'/'+l+'/'+k);
+        const d=item.k===1 ? new Uint32Array(u.buffer,u.byteOffset,u.byteLength/4) : new C(u.buffer,u.byteOffset,u.byteLength/bytes);
+        puts.push([String(worldId)+'|'+sid+'|'+l+'|'+k,{k:item.k,d}]);
+      }
+    }
+  }
+  await IDB.delRange('tiles',String(worldId)+'|');
+  if(puts.length) await IDB.putMany('tiles',puts);
+}
 async function importWorldRaw(raw){
   await persist(); let w;
   if(typeof voDropViewWorld==='function') voDropViewWorld();
@@ -8789,8 +8826,7 @@ async function importWorldRaw(raw){
   const _isRawWorld = !!(raw && raw.id && raw.name && !raw.world);
   if(raw && (raw.format==='atlas-v2' || raw.format==='atlas-view-v1') && raw.world){
     w=raw.world; if(_isView || !w.id||DB.worlds[w.id]) w.id=uid('world'); normalizeWorld(w); syncCaptureExtra(w,raw); if(_isView) w.readOnly=true; else delete w.readOnly; Store.reset(w.id);
-    for(const sid in (raw.tiles||{})){ for(const l of LAYER_IDS){ const o=raw.tiles[sid][l]; if(!o) continue; const r=Store.raw[sid]||(Store.raw[sid]={}); const m=r[l]||(r[l]=new Map());
-      for(const k in o){ const u=b64ToBytes(o[k].b); m.set(Number(k), {k:o[k].k, d: o[k].k===1? new Uint32Array(u.buffer) : new LAYER_DEF[l].ctor(u.buffer)}); } } await nextFrame(); }
+    syncLoadTiles(w.id,raw.tiles);
   } else {
     const old=decodeLegacyWorld(_isRawWorld ? raw : raw); if(!old.id||DB.worlds[old.id]) old.id=uid('world'); w=await legacyToV2(old,{keepId:true});
   }
@@ -8798,6 +8834,7 @@ async function importWorldRaw(raw){
   DB.worlds[w.id]=w; DB.currentWorldId=w.id; Store.worldId=w.id; Store.fullRewrite=!w.readOnly; if(!w.readOnly) markMeta();
   History.clear(); mapInitialized=false; MapView._neverFit=false; MapView.pinnedStateId=null; MapView.selection=null; MapView.stats=null;
   await persist();
+  return {legacyExport:_isLegacyExport, rawWorld:_isRawWorld, viewOnly:!!w.readOnly, hasTiles:!!(raw && raw.tiles && Object.keys(raw.tiles).length)};
 }
 
 
@@ -8827,13 +8864,14 @@ function handleImportFile(file){
   reader.onload = async () => {
     try{
       const raw = JSON.parse(reader.result);
-      const ok = raw && typeof raw==='object' && (((raw.format==='atlas-v2'||raw.format==='atlas-view-v1') && raw.world && Array.isArray(raw.world.nations)) || (raw.id && raw.name && Array.isArray(raw.nations)));
+      const candidate=syncWorldOfDoc(raw);
+      const ok = raw && typeof raw==='object' && candidate && typeof candidate==='object' && candidate.id && candidate.name && Array.isArray(candidate.nations) && ((raw.format==='atlas-v2'||raw.format==='atlas-view-v1') ? !!raw.world : !raw.world);
       if(!ok){ toast('有効な世界データファイルではありません','err'); return; }
-      await importWorldRaw(raw);
+      const imported=await importWorldRaw(raw);
       document.getElementById('welcome').classList.add('hidden');
       document.getElementById('app').style.display='flex';
       fullRerender();
-      toast(W()&&W().readOnly ? '閲覧専用で開きました(編集・保存はできません)' : (_isLegacyExport ? '旧形式のファイルを読み込みました。次回の保存で新しい形式になります' : (_isRawWorld ? '保存先の旧形式を読み込みました。地形データがありません。次回の保存で新しい形式になります' : '世界データを読み込みました')));
+      toast(imported.viewOnly ? '閲覧専用で開きました(編集・保存はできません)' : (imported.legacyExport ? '旧形式のファイルを読み込みました。次回の保存で新しい形式になります' : (imported.rawWorld ? (imported.hasTiles ? '旧形式の世界データを読み込みました。次回の保存で新しい形式になります' : '旧形式の世界データを読み込みました。地形データがないため、地形は空の状態です') : '世界データを読み込みました')));
     }catch(err){ console.error(err); toast('読み込みに失敗しました: JSON形式を確認してください','err'); }
   };
   reader.readAsText(file);
@@ -11954,7 +11992,7 @@ async function exportViewJson(w){
     const tiles=await voCollectTiles(w);
     const world=voStrip(JSON.parse(JSON.stringify(w)));
     world.history=[]; world.refImages=[]; world.readOnly=true; syncViewWorld(world);   /* 編集履歴・下描き画像は含めない */
-    const json=JSON.stringify({format:VIEW_FORMAT, formatVersion:3, readOnly:true, exportedAt:Date.now(), world, tiles});
+    const json=JSON.stringify({format:VIEW_FORMAT, formatVersion:3, readOnly:true, exportedAt:Date.now(), id:world.id, name:world.name, revision:Number(world.revision)||0, updatedAt:Number(world.updatedAt)||0, schemaVersion:Number(world.schemaVersion)||0, world, tiles});
     download((w.name||'world')+'_閲覧用.json', json, 'application/json');
     toast('閲覧用JSONを書き出しました ('+(json.length/1048576).toFixed(1)+' MB)');
   }catch(e){ console.error(e); toast('書き出しに失敗しました: '+(e&&e.message||e),'err'); }
@@ -13548,9 +13586,10 @@ function syncMergeUnsaved(id, nextRevision){
 }
 /* 保存先の内容が、保存しようとした内容と同じか(応答だけ失敗した場合の判断に使う) */
 function syncDocMatches(doc, w){
-  if(!doc || typeof doc!=='object' || Number(doc.revision)!==Number(w.revision)) return false;
+  const candidate=syncWorldOfDoc(doc);
+  if(!candidate || typeof candidate!=='object' || Number(candidate.revision)!==Number(w.revision)) return false;
   const base=SyncCore.base[w.id]; if(!base) return false;
-  return syncDiff(doc,base).changes.length===0;
+  return syncDiff(candidate,base).changes.length===0;
 }
 /* 1つの世界を保存する。成功 {ok:true,cs} / 失敗 {failed:true, state, code, retryable, message} */
 async function syncPersist(w){
@@ -13611,7 +13650,7 @@ function syncScheduleRetry(){ if(SyncCore.retry.auto>=5) return; SyncCore.retry.
 
 /* ---------- 書き出し・取り込み・閲覧用 ---------- */
 function syncExportedBy(){ const e=getEditor(); return {editorId:e.editorId, displayName:e.displayName}; }
-const SYNC_FILE_KEYS=['format','formatVersion','exportedAt','exportedBy','world','tiles','readOnly'];
+const SYNC_FILE_KEYS=['format','formatVersion','exportedAt','exportedBy','world','tiles','readOnly','id','name','revision','updatedAt','schemaVersion'];
 function syncCaptureExtra(w, raw){
   if(!raw || typeof raw!=='object') return;
   const ex={}; let any=false; for(const k of Object.keys(raw)){ if(SYNC_FILE_KEYS.indexOf(k)<0){ ex[k]=raw[k]; any=true; } }
@@ -13619,7 +13658,8 @@ function syncCaptureExtra(w, raw){
 }
 function syncExportDoc(w, tiles){
   const wc=Object.assign({}, w); delete wc._fileExtra;
-  return Object.assign({}, w._fileExtra||{}, {format:'atlas-v2', formatVersion:3, exportedAt:Date.now(), exportedBy:syncExportedBy(), readOnly:false, world:wc, tiles});
+  /* ルートの識別メタデータは保存先アダプタの一覧/ETag用。正本の世界データは world のみ。 */
+  return Object.assign({}, w._fileExtra||{}, {format:'atlas-v2', formatVersion:3, exportedAt:Date.now(), exportedBy:syncExportedBy(), readOnly:false, id:w.id, name:w.name, revision:Number(w.revision)||0, updatedAt:Number(w.updatedAt)||0, schemaVersion:Number(w.schemaVersion)||0, world:wc, tiles:tiles||{}});
 }
 function syncStripView(o){
   if(Array.isArray(o)){ o.forEach(syncStripView); return o; }
@@ -13695,7 +13735,7 @@ class SyncError extends Error{
 }
 function syncErr(code, message, retryable, cause){ return new SyncError(code, message, retryable, cause); }
 function syncBytes(text){ return new TextEncoder().encode(text).length; }
-function syncSummaryOf(doc){ return {worldId:String(doc.id||doc.worldId||''), name:String(doc.name||''), revision:Number(doc.revision)||0, updatedAt:Number(doc.updatedAt)||0}; }
+function syncSummaryOf(doc){ const w=syncWorldOfDoc(doc)||{}; return {worldId:String(w.id||w.worldId||''), name:String(w.name||''), revision:Number(w.revision)||0, updatedAt:Number(w.updatedAt)||0}; }
 
 /* =====================================================================
    1) IndexedDB アダプタ — 既存のデータベース(atlas_v2: worlds/tiles/backups/kv)をそのまま使う
@@ -14316,14 +14356,15 @@ const GTest = {
 /* ---------- 世界を Drive から開く ---------- */
 async function gOpenDriveWorld(ref, name){
   const ad=SyncAdapters.get('drive'); if(!ad) throw gErr('UNKNOWN',{source:'drive',status:0,reasons:[]},'Driveを使えません');
-  const L=await ad.load(ref); const doc=L.doc;
+  const L=await ad.load(ref); const fileDoc=L.doc; const doc=syncWorldOfDoc(fileDoc);
   if(!doc || typeof doc!=='object' || !doc.id || typeof doc.name!=='string') throw gErr('UNKNOWN',{source:'drive',status:200,reasons:['not_a_world']},'このファイルは世界のデータではありません');
   const have=DB.worlds[doc.id]; const r=have && SyncCore.remote[doc.id];
   if(have && !(r && r.adapterId==='drive' && r.ref===ref)) throw gErr('UNKNOWN',{source:'drive',status:200,reasons:['same_world_exists']},'同じIDの世界がこの端末にすでにあります');
   await persist();
   if(typeof voDropViewWorld==='function') voDropViewWorld();
-  const w=normalizeWorld(doc); Store.reset(w.id); areaMigrate(w); syncBaseline(w);
-  DB.worlds[w.id]=w; DB.currentWorldId=w.id; Store.worldId=w.id; Store.fullRewrite=false; delete w.readOnly;
+  const w=normalizeWorld(doc); Store.reset(w.id); if(fileDoc && fileDoc.format==='atlas-v2') syncLoadTiles(w.id,fileDoc.tiles); areaMigrate(w); syncBaseline(w);
+  DB.worlds[w.id]=w; DB.currentWorldId=w.id; Store.worldId=w.id; Store.fullRewrite=!!(fileDoc && fileDoc.format==='atlas-v2' && fileDoc.tiles); delete w.readOnly;
+  if(Store.fullRewrite) await Store.flush();
   syncAttach(w.id,'drive',ref,L.etag); if(SyncAdapters.bindingStore) Promise.resolve(SyncAdapters.bindingStore.save(w.id,{adapterId:'drive',ref})).catch(()=>{});
   History.clear(); mapInitialized=false; MapView._neverFit=false; MapView.pinnedStateId=null; MapView.selection=null; MapView.stats=null;
   GRecent.add(ref, name||w.name);
@@ -14549,8 +14590,14 @@ const ODAuth = {
     if(!(ev && ev.isTrusted)) throw odErr('AUTH_REQUIRED',{source:'popup',type:'gesture_required'},'ボタンを押して始めてください');
     clientId=clientId||ODCfg.v.clientId; if(!clientId) throw odErr('AUTH_REQUIRED',{source:'popup',type:'no_client_id'},'アプリケーション(クライアント)IDが未設定です');
     if(ODAuth.flow) return ODAuth.flow.promise;
+    if(typeof BroadcastChannel!=='function') throw odErr('AUTH_REQUIRED',{source:'popup',type:'login_incomplete'},'このブラウザは安全なログイン完了通知(BroadcastChannel)に対応していません。対応ブラウザで開いてください');
     if(ODAuth.clientFor && ODAuth.clientFor!==clientId) ODAuth._clearTokens();
-    const {verifier,challenge}=await ODAuth._pkce(); const state=ODAuth._rand();
+    /* 非同期のPKCE計算より前に空のポップアップを開き、ユーザー操作の許可を失わない */
+    const w=window.open('about:blank','atlas-od','width=520,height=700');
+    if(!w) throw odErr('AUTH_REQUIRED',{source:'popup',type:'popup_failed_to_open'},'ポップアップを開けません。ポップアップを許可して再試行してください');
+    ODAuth.popup=w;
+    let verifier=null;
+    try{ const pkce=await ODAuth._pkce(); verifier=pkce.verifier; const challenge=pkce.challenge; const state=ODAuth._rand();
     const q=new URLSearchParams({client_id:clientId, response_type:'code', redirect_uri:ODAuth.redirectUri(), response_mode:'query', scope:ODAuth.scopes(), code_challenge:challenge, code_challenge_method:'S256', state, prompt:'select_account'});
     const flow={verifier, state, clientId}; flow.promise=new Promise((res,rej)=>{ flow.resolve=res; flow.reject=rej; }); ODAuth.flow=flow;
     let to=null, channel=null;
@@ -14565,13 +14612,12 @@ const ODAuth = {
         fin(null);
       }catch(e){ fin(e); }
     };
-    if(typeof BroadcastChannel!=='function'){ fin(odErr('AUTH_REQUIRED',{source:'popup',type:'login_incomplete'},'ログインが完了しませんでした')); return flow.promise; }
     channel=new BroadcastChannel('atlas-onedrive-auth'); channel.onmessage=onMsg;
     to=setTimeout(()=>fin(odErr('AUTH_REQUIRED',{source:'popup',type:'login_incomplete'},'ログインが完了しませんでした')), ODAuth.timeoutMs);
-    const w=window.open(ODAuth.AUTHORIZE+'?'+q.toString(), 'atlas-od', 'width=520,height=700');
-    if(!w){ fin(odErr('AUTH_REQUIRED',{source:'popup',type:'popup_failed_to_open'},'ポップアップを開けません')); return flow.promise; }
-    ODAuth.popup=w; /* popup.closed は COOP 環境で誤判定するため、完了判定には使わない */
+    /* ポップアップは先に開いてある。PKCE計算後に認可URLへ移動する */
+    w.location.href=ODAuth.AUTHORIZE+'?'+q.toString();
     return flow.promise;
+    }catch(e){ try{ w.close(); }catch(_){} if(ODAuth.popup===w) ODAuth.popup=null; throw e; }
   },
   /* トークン取得(コードの交換 / 更新)。クライアントシークレットは送らない */
   async _redeem(params, clientId){
@@ -14778,13 +14824,14 @@ const ODTest = {
 
 /* ---------- 世界を OneDrive から開く ---------- */
 async function odOpenWorld(ref, name){
-  const ad=SyncAdapters.get('onedrive'); const L=await ad.load(ref); const doc=L.doc;
+  const ad=SyncAdapters.get('onedrive'); const L=await ad.load(ref); const fileDoc=L.doc; const doc=syncWorldOfDoc(fileDoc);
   if(!doc||typeof doc!=='object'||!doc.id||typeof doc.name!=='string') throw odErr('UNKNOWN',{source:'graph',status:200,codes:['not_a_world']},'このファイルは世界のデータではありません');
   const have=DB.worlds[doc.id]; const r=have&&SyncCore.remote[doc.id];
   if(have && !(r&&r.adapterId==='onedrive'&&r.ref===ref)) throw odErr('UNKNOWN',{source:'graph',status:200,codes:['same_world_exists']},'同じIDの世界がこの端末にすでにあります');
   await persist(); if(typeof voDropViewWorld==='function') voDropViewWorld();
-  const w=normalizeWorld(doc); Store.reset(w.id); areaMigrate(w); syncBaseline(w);
-  DB.worlds[w.id]=w; DB.currentWorldId=w.id; Store.worldId=w.id; Store.fullRewrite=false; delete w.readOnly;
+  const w=normalizeWorld(doc); Store.reset(w.id); if(fileDoc && fileDoc.format==='atlas-v2') syncLoadTiles(w.id,fileDoc.tiles); areaMigrate(w); syncBaseline(w);
+  DB.worlds[w.id]=w; DB.currentWorldId=w.id; Store.worldId=w.id; Store.fullRewrite=!!(fileDoc && fileDoc.format==='atlas-v2' && fileDoc.tiles); delete w.readOnly;
+  if(Store.fullRewrite) await Store.flush();
   syncAttach(w.id,'onedrive',ref,L.etag); if(SyncAdapters.bindingStore) Promise.resolve(SyncAdapters.bindingStore.save(w.id,{adapterId:'onedrive',ref})).catch(()=>{});
   History.clear(); mapInitialized=false; MapView._neverFit=false; MapView.pinnedStateId=null; MapView.selection=null; MapView.stats=null;
   ODRecent.add(ref, name||w.name);
