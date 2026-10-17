@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>架空世界管理ツール</title>
-<script>/* ONEDRIVE-RETURN */(function(){ try{ if(window.name==='atlas-od' && window.opener && window.opener!==window && /[?&](code|error)=/.test(location.search) && /[?&]state=/.test(location.search)){ window.opener.postMessage({atlasOd:1,search:location.search},location.origin); window.close(); } }catch(e){} })();</script>
+<script>/* ONEDRIVE-RETURN */(function(){ try{ if(window.name==='atlas-od' && /[?&](code|error)=/.test(location.search) && /[?&]state=/.test(location.search) && typeof BroadcastChannel==='function'){ var c=new BroadcastChannel('atlas-onedrive-auth'); c.postMessage({atlasOd:1,search:location.search}); c.close(); window.close(); } }catch(e){} })();</script>
 <style>
 :root{
   --ink:#12161d;
@@ -5851,7 +5851,7 @@ function openMetricManageModal(){
 let currentRole = 'admin';
 try{ currentRole = localStorage.getItem('atlaschronicle_role') || 'admin'; }catch(e){ console.warn('role read failed', e); }
 /* 権限識別子: nation=国家・都市 / history=出来事・戦争・条約・人物・組織・外交 / map=地形・領土・地域・地図 */
-const ROLE_PERMS = { admin:null, viewer:[], nation:['nation'], history:['history'], map:['map'] };
+const ROLE_PERMS = { admin:null, viewer:[], nation:['nation','storage'], history:['history','storage'], map:['map','storage'] };
 const PERM_HEAD_RULES = [
   ['nation', /国家|都市/],
   ['history', /出来事|戦争|外交|条約|文書|関係|人物|組織/],
@@ -8784,13 +8784,15 @@ async function exportWorldJson(w){
 async function importWorldRaw(raw){
   await persist(); let w;
   if(typeof voDropViewWorld==='function') voDropViewWorld();
-  const _isView = !!(raw && raw.format==='atlas-view-v1');
-  if(raw && (raw.format==='atlas-v2' || _isView) && raw.world){
+  const _isView = !!(raw && (raw.format==='atlas-view-v1' || raw.readOnly===true));
+  const _isLegacyExport = !!(raw && raw.format==='atlas-v2' && raw.world && raw.formatVersion==null);
+  const _isRawWorld = !!(raw && raw.id && raw.name && !raw.world);
+  if(raw && (raw.format==='atlas-v2' || raw.format==='atlas-view-v1') && raw.world){
     w=raw.world; if(_isView || !w.id||DB.worlds[w.id]) w.id=uid('world'); normalizeWorld(w); syncCaptureExtra(w,raw); if(_isView) w.readOnly=true; else delete w.readOnly; Store.reset(w.id);
     for(const sid in (raw.tiles||{})){ for(const l of LAYER_IDS){ const o=raw.tiles[sid][l]; if(!o) continue; const r=Store.raw[sid]||(Store.raw[sid]={}); const m=r[l]||(r[l]=new Map());
       for(const k in o){ const u=b64ToBytes(o[k].b); m.set(Number(k), {k:o[k].k, d: o[k].k===1? new Uint32Array(u.buffer) : new LAYER_DEF[l].ctor(u.buffer)}); } } await nextFrame(); }
   } else {
-    const old=decodeLegacyWorld(raw); if(!old.id||DB.worlds[old.id]) old.id=uid('world'); w=await legacyToV2(old,{keepId:true});
+    const old=decodeLegacyWorld(_isRawWorld ? raw : raw); if(!old.id||DB.worlds[old.id]) old.id=uid('world'); w=await legacyToV2(old,{keepId:true});
   }
   areaMigrate(w); syncBaseline(w);
   DB.worlds[w.id]=w; DB.currentWorldId=w.id; Store.worldId=w.id; Store.fullRewrite=!w.readOnly; if(!w.readOnly) markMeta();
@@ -8825,13 +8827,13 @@ function handleImportFile(file){
   reader.onload = async () => {
     try{
       const raw = JSON.parse(reader.result);
-      const ok = raw && typeof raw==='object' && (((raw.format==='atlas-v2'||raw.format==='atlas-view-v1') && raw.world && Array.isArray(raw.world.nations)) || Array.isArray(raw.nations));
+      const ok = raw && typeof raw==='object' && (((raw.format==='atlas-v2'||raw.format==='atlas-view-v1') && raw.world && Array.isArray(raw.world.nations)) || (raw.id && raw.name && Array.isArray(raw.nations)));
       if(!ok){ toast('有効な世界データファイルではありません','err'); return; }
       await importWorldRaw(raw);
       document.getElementById('welcome').classList.add('hidden');
       document.getElementById('app').style.display='flex';
       fullRerender();
-      toast(W()&&W().readOnly ? '閲覧専用で開きました(編集・保存はできません)' : '世界データを読み込みました');
+      toast(W()&&W().readOnly ? '閲覧専用で開きました(編集・保存はできません)' : (_isLegacyExport ? '旧形式のファイルを読み込みました。次回の保存で新しい形式になります' : (_isRawWorld ? '保存先の旧形式を読み込みました。地形データがありません。次回の保存で新しい形式になります' : '世界データを読み込みました')));
     }catch(err){ console.error(err); toast('読み込みに失敗しました: JSON形式を確認してください','err'); }
   };
   reader.readAsText(file);
@@ -8902,6 +8904,7 @@ function openNewWorldModal(){
 function openFileMenu(){
   const body = `<div class="mini-btn-row" style="flex-direction:column;align-items:stretch;">
     <button class="btn" id="fmExportJson">世界データをJSONで書き出す(地図タイルを含む)</button>
+    <button class="btn" id="fmOverwriteWorldFile">世界ファイルに上書き…</button>
     <button class="btn" id="fmSettingDoc">世界設定書を書き出す(HTML/Word・章を選択)</button>
     <button class="btn" id="fmExportView" data-tip="閲覧用JSON|読み取り専用で開けるJSONを書き出します。APIキー・AIの履歴・バックアップ・編集履歴・個人設定は含まれません">閲覧用JSONを書き出す(読み取り専用・共有向け)</button>
     <button class="btn" id="fmExportCsvStats">統計データをCSVで書き出す</button>
@@ -8913,6 +8916,7 @@ function openFileMenu(){
   </div>`;
   openModal('ファイル', body, [{label:'閉じる', onClick: closeModal}]);
   document.getElementById('fmExportJson').addEventListener('click', ()=>{ closeModal(); exportWorldJson(W()); });
+  document.getElementById('fmOverwriteWorldFile').addEventListener('click', ()=>{ closeModal(); overwriteWorldFile(); });
   document.getElementById('fmExportView').addEventListener('click', ()=>{ closeModal(); exportViewJson(W()); });
   document.getElementById('fmSettingDoc').addEventListener('click', ()=>{ closeModal(); openSettingDocModal(); });
   document.getElementById('fmExportCsvStats').addEventListener('click', exportStatsCsv);
@@ -8923,6 +8927,39 @@ function openFileMenu(){
   document.getElementById('fmNewWorld').addEventListener('click', ()=>{ closeModal(); openNewWorldModal(); });
 }
 
+
+async function overwriteWorldFile(){
+  const w=W(); if(!w) return;
+  if(w.readOnly){ toast('閲覧専用の世界は上書きできません','err'); return; }
+  if(typeof roleAllows==='function' && !roleAllows('storage','storage')){ toast('権限 storage がないため、世界ファイルを上書きできません','err'); return; }
+  const validate=async(f)=>{
+    const raw=JSON.parse(await f.text()); const candidate=raw&&raw.world?raw.world:raw;
+    if(!candidate||!candidate.id||!candidate.name||!Array.isArray(candidate.nations)) throw Object.assign(new Error('世界ファイルではありません。atlas-v2 または対応する旧形式を選んでください'),{code:'not_a_world'});
+    if(String(candidate.id)!==String(w.id) && !confirm('別の世界のファイルです。「別の世界で上書きする」を明示して続行しますか？')) return false;
+    if(Number(candidate.revision)>Number(w.revision||0) && !confirm('ファイルの版が現在より新しいため、ファイル側の変更が失われます。上書きしますか？')) return false;
+    return true;
+  };
+  const makeJson=async()=>JSON.stringify(syncExportDoc(w,await voCollectTiles(w)),null,2);
+  if(typeof window.showOpenFilePicker==='function'){
+    try{
+      const [handle]=await window.showOpenFilePicker({multiple:false,types:[{description:'世界JSON',accept:{'application/json':['.json']}}]});
+      const f=await handle.getFile(); if(!(await validate(f))) return;
+      const json=await makeJson();
+      // 書き込みはユーザー操作からのみ実行。書き込み後に再読込して照合する。
+      const writable=await handle.createWritable(); await writable.write(json); await writable.close();
+      const verify=JSON.parse(await (await handle.getFile()).text());
+      if(!verify||verify.format!=='atlas-v2'||verify.formatVersion!==3||!verify.world||verify.world.id!==w.id||Number(verify.world.revision)!==Number(w.revision)) throw Object.assign(new Error('書き込み後の検証で現在の世界と一致しません'),{code:'save_failed'});
+      toast('世界ファイルを上書きしました: '+f.name+' / 版 '+(w.revision||0)+' / '+new Date().toLocaleString());
+    }catch(e){ if(e&&e.name==='AbortError') return; toast((e&&e.code==='not_a_world'?'not_a_world: ':'save_failed: ')+(e&&e.message||'世界ファイルの上書きに失敗しました'),'err'); }
+    return;
+  }
+  // File System Access API 非対応環境では、選択したファイルを検査後、同名のJSONをダウンロードする。
+  const picker=document.createElement('input'); picker.type='file'; picker.accept='.json,application/json';
+  picker.addEventListener('change',async()=>{ const f=picker.files&&picker.files[0]; if(!f)return;
+    try{ if(!(await validate(f))) return; const json=await makeJson(); download(f.name,json,'application/json'); toast('ダウンロードしたファイルで、元のファイルを置き換えてください。'); }
+    catch(e){ toast((e&&e.code==='not_a_world'?'not_a_world: ':'save_failed: ')+(e&&e.message||'ファイルを読み取れません'),'err'); }
+  },{once:true}); picker.click();
+}
 
 function openSearch(){ document.getElementById('searchOverlay').classList.add('active'); document.getElementById('searchInput').value=''; document.getElementById('searchResults').innerHTML=''; document.getElementById('searchInput').focus(); }
 function closeSearch(){ document.getElementById('searchOverlay').classList.remove('active'); }
@@ -11891,12 +11928,12 @@ async function encodeFramesToVideo(frames, fps, w, o){
    ・書き出し: 世界の内容(国家・人物・地図タイル等)のみ。APIキー/AI履歴/バックアップ/編集履歴/個人設定は含めない
    ・読み込み: w.readOnly=true の世界として開く。mutate/heavyOp/Stroke/保存が全て拒否・省略される(データ変更とIndexedDB保存なし)
    ========================================================= */
-const VIEW_FORMAT='atlas-view-v1';
+const VIEW_FORMAT='atlas-v2';
 function isViewOnly(){ const w=(typeof W==='function')?W():null; return !!(w && w.readOnly); }
 /* 秘密情報になり得るキー・文字列を再帰的に除去(世界データには本来入らないが、書き出し時の最後の砦) */
 function voStrip(o){
   if(Array.isArray(o)) return o.map(voStrip);
-  if(o && typeof o==='object'){ const r={}; for(const k of Object.keys(o)){ if(/api[-_]?key|secret|passw|bearer|authorization|access[-_]?token/i.test(k)) continue; r[k]=voStrip(o[k]); } return r; }
+  if(o && typeof o==='object'){ const r={}; for(const k of Object.keys(o)){ if(/api[-_]?key|secret|passw|bearer|authorization|access[-_]?token|client[-_]?id|refresh[-_]?token|code[-_]?verifier/i.test(k)) continue; r[k]=voStrip(o[k]); } return r; }
   if(typeof o==='string' && o.length<500000 && /sk-[A-Za-z0-9_-]{16,}/.test(o)) return o.replace(/sk-[A-Za-z0-9_-]{16,}/g,'[削除済み]');
   return o;
 }
@@ -11917,7 +11954,7 @@ async function exportViewJson(w){
     const tiles=await voCollectTiles(w);
     const world=voStrip(JSON.parse(JSON.stringify(w)));
     world.history=[]; world.refImages=[]; world.readOnly=true; syncViewWorld(world);   /* 編集履歴・下描き画像は含めない */
-    const json=JSON.stringify({format:VIEW_FORMAT, readOnly:true, exportedAt:Date.now(), world, tiles});
+    const json=JSON.stringify({format:VIEW_FORMAT, formatVersion:3, readOnly:true, exportedAt:Date.now(), world, tiles});
     download((w.name||'world')+'_閲覧用.json', json, 'application/json');
     toast('閲覧用JSONを書き出しました ('+(json.length/1048576).toFixed(1)+' MB)');
   }catch(e){ console.error(e); toast('書き出しに失敗しました: '+(e&&e.message||e),'err'); }
@@ -13517,22 +13554,28 @@ function syncDocMatches(doc, w){
 }
 /* 1つの世界を保存する。成功 {ok:true,cs} / 失敗 {failed:true, state, code, retryable, message} */
 async function syncPersist(w){
+  if(w && w.readOnly) return syncFail(w.id,{state:'error',code:'PERMISSION_DENIED',retryable:false,message:'閲覧専用の世界は保存先へ保存できません'});
+  if(typeof roleAllows==='function' && !roleAllows('storage','storage')) return syncFail(w.id,{state:'error',code:'PERMISSION_DENIED',retryable:false,message:'権限 storage がないため保存先へ保存できません'});
   const id=w.id, cs=syncCommit(w);
   if(cs) (SyncCore.unsaved[id]||(SyncCore.unsaved[id]=[])).push(cs);
   const ad=syncAdapterOf(w);
   if(!ad) return syncFail(id,{state:'error',code:'UNKNOWN',retryable:false,message:'保存先が見つかりません'});
   const nextRevision=Number(w.revision)||0; let attempt=0;
+  const syncDoc=async()=>{ const tiles=await voCollectTiles(w); return syncExportDoc(w,tiles); };
+  const doc=await syncDoc();
+  const max=ad && ad.capabilities ? ad.capabilities.maxDocBytes : null;
+  if(max!==null && max!==undefined && new Blob([JSON.stringify(doc)]).size>max) return syncFail(id,{state:'error',code:'QUOTA',retryable:false,message:'size_limit: 保存先の上限('+max+' バイト)を超えています。地図の解像度を下げるか、データを減らしてください。'});
   for(;;){
     let rem=SyncCore.remote[id];
     try{
       if(!rem || rem.adapterId!==ad.id){                                           // 保存先にまだ無い世界 → 作る
-        const r=await ad.create(w);
+        const r=await ad.create(doc);
         syncAttach(id, ad.id, r.ref, r.etag); delete SyncCore.unsaved[id];
         if(SyncAdapters.bindingStore) Promise.resolve(SyncAdapters.bindingStore.save(id,{adapterId:ad.id,ref:r.ref})).catch(()=>{});
         SyncCore.status[id]={state:'saved', degraded:ad.capabilities.conditionalWrite===false, warning:null, at:Date.now()}; SyncCore.retry.auto=0;
         return {ok:true, cs};
       }
-      const r=await ad.commit(rem.ref, {baseEtag:rem.etag, nextRevision, doc:w, changeset:syncMergeUnsaved(id,nextRevision)});
+      const r=await ad.commit(rem.ref, {baseEtag:rem.etag, nextRevision, doc, changeset:syncMergeUnsaved(id,nextRevision)});
       if(r && r.ok){
         rem.etag=r.etag; delete SyncCore.unsaved[id];
         SyncCore.status[id]={state:'saved', degraded:!!(r.degraded || ad.capabilities.conditionalWrite===false), warning:r.warning||null, at:Date.now()}; SyncCore.retry.auto=0;
@@ -13568,7 +13611,7 @@ function syncScheduleRetry(){ if(SyncCore.retry.auto>=5) return; SyncCore.retry.
 
 /* ---------- 書き出し・取り込み・閲覧用 ---------- */
 function syncExportedBy(){ const e=getEditor(); return {editorId:e.editorId, displayName:e.displayName}; }
-const SYNC_FILE_KEYS=['format','exportedAt','exportedBy','world','tiles','readOnly'];
+const SYNC_FILE_KEYS=['format','formatVersion','exportedAt','exportedBy','world','tiles','readOnly'];
 function syncCaptureExtra(w, raw){
   if(!raw || typeof raw!=='object') return;
   const ex={}; let any=false; for(const k of Object.keys(raw)){ if(SYNC_FILE_KEYS.indexOf(k)<0){ ex[k]=raw[k]; any=true; } }
@@ -13576,7 +13619,7 @@ function syncCaptureExtra(w, raw){
 }
 function syncExportDoc(w, tiles){
   const wc=Object.assign({}, w); delete wc._fileExtra;
-  return Object.assign({}, w._fileExtra||{}, {format:'atlas-v2', exportedAt:Date.now(), exportedBy:syncExportedBy(), world:wc, tiles});
+  return Object.assign({}, w._fileExtra||{}, {format:'atlas-v2', formatVersion:3, exportedAt:Date.now(), exportedBy:syncExportedBy(), readOnly:false, world:wc, tiles});
 }
 function syncStripView(o){
   if(Array.isArray(o)){ o.forEach(syncStripView); return o; }
@@ -13585,7 +13628,7 @@ function syncStripView(o){
 }
 function syncViewWorld(world){
   syncStripView(world);
-  delete world.editors; delete world._fileExtra;
+  delete world.editors; delete world._fileExtra; delete world._by; delete world.exportedBy; delete world.clientId; delete world.client_id;
   if(Array.isArray(world.tombstones)) world.tombstones.forEach(t=>{ if(t && typeof t==='object'){ delete t.by; delete t.byName; } });
   return world;
 }
@@ -14510,23 +14553,24 @@ const ODAuth = {
     const {verifier,challenge}=await ODAuth._pkce(); const state=ODAuth._rand();
     const q=new URLSearchParams({client_id:clientId, response_type:'code', redirect_uri:ODAuth.redirectUri(), response_mode:'query', scope:ODAuth.scopes(), code_challenge:challenge, code_challenge_method:'S256', state, prompt:'select_account'});
     const flow={verifier, state, clientId}; flow.promise=new Promise((res,rej)=>{ flow.resolve=res; flow.reject=rej; }); ODAuth.flow=flow;
-    let poll=null, to=null;
-    const fin=(err)=>{ window.removeEventListener('message',onMsg); clearInterval(poll); clearTimeout(to); const f=ODAuth.flow; ODAuth._endFlow(); if(f===flow) err?flow.reject(err):flow.resolve(true); };
+    let to=null, channel=null;
+    const fin=(err)=>{ if(channel){ try{channel.close();}catch(e){} channel=null; } clearTimeout(to); const f=ODAuth.flow; if(f===flow){ flow.verifier=null; ODAuth._endFlow(); err?flow.reject(err):flow.resolve(true); } };
     const onMsg=async(m)=>{
-      if(m.origin!==location.origin || !m.data || !m.data.atlasOd || m.source!==ODAuth.popup) return;
-      const p=new URLSearchParams(String(m.data.search||'')); window.removeEventListener('message',onMsg); clearInterval(poll);
+      if(!m || !m.data || !m.data.atlasOd) return;
+      const p=new URLSearchParams(String(m.data.search||''));
       try{
-        if(p.get('state')!==flow.state) throw odErr('AUTH_REQUIRED',{source:'popup',type:'state_mismatch'},'state が一致しません');      // 一致しなければ、codeは使わずに破棄
+        if(p.get('state')!==flow.state) return; // state が一致しない結果は無視し、正しい結果またはタイムアウトを待つ
         if(p.get('error')) throw odErr('AUTH_REQUIRED',{source:'entra',error:String(p.get('error')),aadsts:[]},'ログインに失敗しました');
         await ODAuth._redeem({grant_type:'authorization_code', code:String(p.get('code')||''), redirect_uri:ODAuth.redirectUri(), code_verifier:flow.verifier}, clientId);
         fin(null);
       }catch(e){ fin(e); }
     };
-    window.addEventListener('message',onMsg);
-    to=setTimeout(()=>fin(odErr('AUTH_REQUIRED',{source:'popup',type:'popup_closed'},'応答がありません')), ODAuth.timeoutMs);
+    if(typeof BroadcastChannel!=='function'){ fin(odErr('AUTH_REQUIRED',{source:'popup',type:'login_incomplete'},'ログインが完了しませんでした')); return flow.promise; }
+    channel=new BroadcastChannel('atlas-onedrive-auth'); channel.onmessage=onMsg;
+    to=setTimeout(()=>fin(odErr('AUTH_REQUIRED',{source:'popup',type:'login_incomplete'},'ログインが完了しませんでした')), ODAuth.timeoutMs);
     const w=window.open(ODAuth.AUTHORIZE+'?'+q.toString(), 'atlas-od', 'width=520,height=700');
     if(!w){ fin(odErr('AUTH_REQUIRED',{source:'popup',type:'popup_failed_to_open'},'ポップアップを開けません')); return flow.promise; }
-    ODAuth.popup=w; poll=setInterval(()=>{ if(w.closed){ clearInterval(poll); setTimeout(()=>{ if(ODAuth.flow===flow) fin(odErr('AUTH_REQUIRED',{source:'popup',type:'popup_closed'},'画面が閉じられました')); },400); } },400);
+    ODAuth.popup=w; /* popup.closed は COOP 環境で誤判定するため、完了判定には使わない */
     return flow.promise;
   },
   /* トークン取得(コードの交換 / 更新)。クライアントシークレットは送らない */
