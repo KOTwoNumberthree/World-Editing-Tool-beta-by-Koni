@@ -20159,6 +20159,7 @@ return {FORMAT, SCHEMA_FORMAT, MAX_OPS, ID_RE, buildSchemaDef, checkValue, valid
    ・検査・定義は mcp/atlas-proposal-core.js(アプリとMCPで共通。上の <script> に埋め込み)と、atlas-schema.json(レジストリから生成)だけを使う
    ・削除は、承認の中でも別に確認する。確認の関数が true を返さない限り、適用の関数は削除を行わない(迂回する引数は無い) */
 const AtlasProposal=(function(){
+  let applyRun=null; window.__atlasApplyClaim=(fn)=>{ if(!applyRun) applyRun=fn; };   /* 提案の承認だけが、世界を書き換える実行を作れる(AI連携の基盤が、読み込みの最後に1度だけ渡す。渡した後はこの入口を消す) */
   const Core=window.AtlasProposalCore; const AIx=()=>window.AtlasAI; const H=(s)=>esc(String(s===undefined||s===null?'':s));
   const liveDef=()=>Core.buildSchemaDef(AIx().collections.list());
   const schema=()=>window.ATLAS_SCHEMA_DEF||liveDef();
@@ -20226,7 +20227,7 @@ const AtlasProposal=(function(){
     try{
       const dataOps=ops.filter(x=>x.op!=='tool'), toolOps=ops.filter(x=>x.op==='tool');
       if(dataOps.length){ const ok=mutate(label,()=>{ try{ dataOps.forEach(applyOne); }catch(e){ failure=e; throw e; } }, pickPerm(dataOps)); if(!ok) throw failure||new Error('適用に失敗しました(権限または入力を確認してください)'); }
-      if(toolOps.length){ const run=A.gateway.newRun({goal:p.goal, mode:'auto', confirm:async()=>true, limits:{maxCalls:toolOps.length+2}}); for(const t of toolOps){ const env=await A.gateway.invoke(t.tool, t.args||{}, run); if(!env.success) throw new Error(`${t.tool}: ${env.summary}`); } }
+      if(toolOps.length){ if(!applyRun) throw new Error('適用の実行を作れません'); const run=applyRun({goal:p.goal, confirm:async()=>true, limits:{maxCalls:toolOps.length+2}}); for(const t of toolOps){ const env=await A.gateway.invoke(t.tool, t.args||{}, run); if(!env.success) throw new Error(`${t.tool}: ${env.summary}`); } }
     }catch(e){ try{ A.tx.rollback(); }catch(e2){} try{ A._refreshUi&&A._refreshUi(true); }catch(e3){} return fail('apply_failed','適用に失敗したため、すべて元に戻しました: '+(e&&e.message||e)); }
     const c=A.tx.commit(label); try{ await persist(); }catch(e){} try{ A._refreshUi&&A._refreshUi(true); }catch(e){}
     return {ok:true, count:ops.length, label, entry:c.entry||null, indices:sel};
@@ -20258,13 +20259,14 @@ const AtlasProposal=(function(){
       ${(p.cautions||[]).length?`<div class="apx-warn" data-apx-cautions="1"><b>検査の注意事項(データは変えていません)</b><br>${p.cautions.slice(0,8).map(H).join('<br>')}</div>`:''}
       ${o.error?`<div class="apx-err" data-apx-error="1">${H(o.error)}</div>`:''}
       <div class="apx-sum">追加 ${cnt.create} ・ 変更 ${cnt.update} ・ 削除 ${cnt.delete}${cnt.tool?` ・ 地図などの操作 ${cnt.tool}`:''}(全${p.operations.length}件。承認前の世界は、まだ変わっていません)</div>
+      <div class="apx-dim" style="margin-left:0" data-apx-partial="1">「選んだ操作だけ承認」を押すと、チェックした操作だけが世界に入ります。チェックを外した操作は<b>却下</b>されます(この提案は閉じ、残りは保存されません。必要なら、もう一度AIに依頼してください)。</div>
       <div class="apx-list">${p.operations.map((op,i)=>opRow(op,i,w,S,deps)).join('')}</div></div>`;
     const sel=o.selected?new Set(o.selected):null;
     const run=async(all)=>{
       const root=document.querySelector('[data-apx-dialog]'); const boxes=[...root.querySelectorAll('[data-sel]')];
       const idx=all?p.operations.map((_,i)=>i):boxes.filter(b=>b.checked).map(b=>Number(b.getAttribute('data-sel')));
       const r=await apply(p, idx, {confirmDelete:(info)=>confirmDeleteDialog(info)});
-      if(r.ok){ closeModal(); toast(`AI提案を承認しました(${r.count}件)。1回の「元に戻す」で全体を戻せます`); if(o.onDone) o.onDone(r); return; }
+      if(r.ok){ const rest=p.operations.length-r.count; closeModal(); toast(rest>0?`AI提案のうち ${r.count}件を承認しました。選ばなかった ${rest}件は却下しました(世界には入れていません)。1回の「元に戻す」で、承認した ${r.count}件が戻ります`:`AI提案を承認しました(${r.count}件)。1回の「元に戻す」で全体を戻せます`); r.rejected=p.operations.map((_,i)=>i).filter(i=>idx.indexOf(i)<0); if(o.onDone) o.onDone(r); return; }
       if(r.code==='delete_not_confirmed'||r.code==='dependency'||r.code==='invalid'||r.code==='apply_failed'){ openDialog(p,Object.assign({},o,{selected:idx, error:r.message})); return; }
       toast(r.message,'err');
     };
@@ -20738,21 +20740,25 @@ AI.tx = Tx;
    ========================================================= */
 const DEFAULT_LIMITS = {
   maxCalls:40, maxChanges:300, maxSeconds:240, maxBatch:12, maxResultChars:3000, maxBatchChars:9000,
-  maxPixelsPerCall:4000000, maxPixelsTotal:16000000, maxCreateItems:25, bulkThreshold:15,
+  maxPixelsPerCall:4000000, maxPixelsTotal:16000000, maxCreateItems:25, bulkThreshold:15, maxContextChars:30000,
 };
 AI.DEFAULT_LIMITS = DEFAULT_LIMITS;
 
 let _chain = Promise.resolve();
 const enqueue = (fn)=>{ const p = _chain.then(fn, fn); _chain = p.catch(()=>{}); return p; };
 
+const APPLY_SEAL = {};   /* 提案の承認が、適用の実行を作るための印。外には出さない(sealApply で1度だけ、関数として渡す) */
+let _sealed = false;
 function newRun(opts){
   opts = opts||{};
+  const _asked = opts.mode||'propose';
+  const _mode = (_asked==='propose' || (_asked==='apply' && opts._seal===APPLY_SEAL)) ? _asked : 'propose';   /* auto などは、提案の記録だけになる */
   return {
     id:'run_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
-    goal:opts.goal||'', mode:opts.mode||'auto', limits:Object.assign({}, DEFAULT_LIMITS, opts.limits||{}),
+    goal:opts.goal||'', mode:_mode, coercedFrom:(_asked&&_asked!==_mode)?_asked:'', limits:Object.assign({}, DEFAULT_LIMITS, opts.limits||{}),
     startedAt:Date.now(), calls:0, pixels:0, changes:{created:0, updated:0, deleted:0},
     steps:[], aliases:{}, plan:[], confirm:opts.confirm||null, signal:opts.signal||null,
-    stopped:false, limitHit:'', onStep:opts.onStep||null, dryRun: (opts.mode==='propose'),
+    stopped:false, limitHit:'', onStep:opts.onStep||null, dryRun: (_mode!=='apply'),
     ops:[], pending:new Map(), _reason:'', sentChars:0,
   };
 }
@@ -20820,6 +20826,7 @@ async function invoke(toolId, rawArgs, run){
     }
     tool = _tools.get(toolId) || _tools.get(String(toolId).replace('_','.'));
     if(tool) env.tool = tool.id;
+    if(tool && !tool.readOnly && !run) return fail(ERR.PERMISSION_DENIED, '書き込みは、提案を経由しないと実行できません', '提案(atlas-proposal-v1)を作り、利用者が承認したときだけ反映されます');
     if(!tool){
       const sug = searchTools(String(toolId).replace(/[._]/g,' '), {limit:3}).map(t=>t.id);
       return fail(ERR.UNSUPPORTED, `Tool "${toolId}" は登録されていません`, sug.length?`近いTool: ${sug.join(', ')}。list_tools で探してください。該当機能が無い場合は「現在この操作はできません」とユーザーに伝えてください`:'list_tools で利用可能なToolを確認してください。該当機能が無い場合は「できない」と報告してください');
@@ -20871,6 +20878,7 @@ async function invoke(toolId, rawArgs, run){
     env.result = o.result===undefined ? null : o.result;
     ['created','updated','deleted','warnings'].forEach(k=>{ if(Array.isArray(o[k])) env[k] = o[k]; });
     env.summary = o.summary || (tool.readOnly ? '取得しました' : '完了しました');
+    if(run && run.coercedFrom && !tool.readOnly) env.warnings.push('この実行は提案の記録だけです(世界は変えていません)。反映するには、提案を承認してください');
     /* refエイリアス登録 */
     if(run){
       const rawRef = isObj(rawArgs) ? rawArgs.ref : undefined;
@@ -20894,7 +20902,9 @@ async function invoke(toolId, rawArgs, run){
   }
   return env;
 }
+const newApplyRun = (o)=>newRun(Object.assign({}, o||{}, {mode:'apply', _seal:APPLY_SEAL}));
 AI.gateway = { invoke, newRun, DEFAULT_LIMITS };
+if(typeof window.__atlasApplyClaim==='function'){ const _claim=window.__atlasApplyClaim; try{ delete window.__atlasApplyClaim; }catch(e){ window.__atlasApplyClaim=undefined; } _claim(newApplyRun); }   /* 提案の承認(先に読み込まれる)が、適用の実行を作る関数を1度だけ受け取る。ここから先は、どこにも出さない */
 AI.checkToolPermission = (tool,args)=>checkPermissions(tool,args);
 AI.PROPOSAL_CAP = 200;   /* 1つの提案に入れられる操作の上限(超えたときは、分けるかをユーザーに聞く) */   /* 提案の検査が、役割(権限)の判定を既存の関数で行うための公開 */
 AI.envelope = (o)=> Object.assign({__envelope:true}, o);
@@ -21874,7 +21884,8 @@ function ssSet(k,v){ try{ sessionStorage.setItem(k,v); }catch(e){} }
 function loadSettings(){
   try{ const o=JSON.parse(lsGet(SKEY)||'null'); if(o && typeof o==='object'){ settings = Object.assign({}, DEFAULT_SETTINGS, o, {openai:Object.assign({}, DEFAULT_SETTINGS.openai, o.openai||{}), limits:o.limits||{}}); delete settings.apiKey; } }catch(e){}
   settings.mode='propose';
-  apiKey = ssGet(SSKEY) || (settings.openai.rememberKey ? (lsGet(KKEY)||'') : '') || '';
+  try{ sessionStorage.removeItem(SSKEY); }catch(e){}   /* 以前の版が残したセッション保存は、使わずに消す */
+  apiKey = settings.openai.rememberKey ? (lsGet(KKEY)||'') : '';   /* 既定はこの画面の中(メモリ)だけ。再読み込み・ブラウザを閉じると消える */
   AI.addSecret(apiKey);
 }
 function saveSettings(){
@@ -21883,14 +21894,16 @@ function saveSettings(){
 }
 function setApiKey(k, remember){
   apiKey = (k||'').trim(); AI.addSecret(apiKey);
-  ssSet(SSKEY, apiKey); lsDel(KKEY);
+  lsDel(KKEY);
   settings.openai.rememberKey = !!remember;
   if(remember && apiKey) lsSet(KKEY, apiKey);
   saveSettings();
 }
 function clearApiKey(){ apiKey=''; try{ sessionStorage.removeItem(SSKEY); }catch(e){} lsDel(KKEY); settings.openai.rememberKey=false; saveSettings(); }
 function rememberKey(flag){ settings.openai.rememberKey=!!flag; if(flag && apiKey) lsSet(KKEY, apiKey); else lsDel(KKEY); saveSettings(); }
-AI.settings = { get:()=>settings, save:saveSettings, setApiKey, clearApiKey, hasKey:()=>!!apiKey, remember:rememberKey, authHeader:()=> apiKey?{Authorization:'Bearer '+apiKey}:{} };
+const maskKey = (k)=>{ k=String(k||''); if(!k) return ''; const n=k.length>=12?4:2; return '••••••••'+k.slice(-n); };
+function exportSettingsJson(){ const s=JSON.parse(JSON.stringify(settings)); delete s.apiKey; if(s.openai){ delete s.openai.apiKey; s.openai.keySaved=!!s.openai.rememberKey; } return JSON.stringify({format:'atlas-ai-settings-v1', settings:s}, null, 2); }
+AI.settings = { masked:()=>maskKey(apiKey), exportJson:exportSettingsJson, get:()=>settings, save:saveSettings, setApiKey, clearApiKey, hasKey:()=>!!apiKey, remember:rememberKey, authHeader:()=> apiKey?{Authorization:'Bearer '+apiKey}:{} };
 
 /* =========================================================
    AIProvider
@@ -21906,13 +21919,94 @@ function sampleErrorMessage(e){
     upstream_error:'Claudeとの通信に失敗しました', tools_unavailable:'この環境ではToolを使った実行に対応していません', capability_disabled:'この表示環境ではClaude連携を使えません', not_declared:'このページにはClaude連携が設定されていません' }[code];
   return m || ('AI呼び出しに失敗しました'+(code?`(${code})`:''));
 }
+const ERR_KINDS = {
+  unreachable:{label:'接続先に届きません', action:'接続先のURLとネットワークを確認してください'},
+  auth:{label:'認証に失敗しました', action:'APIキー(またはClaudeの利用許可)を確認してください'},
+  model:{label:'モデルが見つかりません', action:'モデル名を確認してください(接続先の一覧にある名前を指定)'},
+  format:{label:'応答の形式が違います(提案の形式になりませんでした)', action:'もう一度試してください。続く場合は、別のモデルにするか、依頼を短くしてください'},
+  limit:{label:'上限(件数・文字数)を超えました', action:'依頼を小さく分けてください(例: 国家ごと・時代ごとに別々に依頼)'},
+  other:{label:'AIの呼び出しに失敗しました', action:'時間をおいて、もう一度試してください'},
+};
+AI.ERR_KINDS = ERR_KINDS;
+AI.classify = function(e){
+  const code = e && e.code; const msg = redact(String((e&&e.message)||e||'')); const m = /^HTTP (\d{3})/.exec(msg); const st = m?Number(m[1]):0; let kind='other';
+  if(['not_granted','sampling_disabled','session_expired'].indexOf(code)>=0) kind='auth';
+  else if(['rate_limited','prompt_too_large','limit','ERROR_LIMIT_EXCEEDED'].indexOf(code)>=0) kind='limit';
+  else if(['empty_completion','refused'].indexOf(code)>=0) kind='format';
+  else if(['capability_disabled','not_declared','tools_unavailable'].indexOf(code)>=0) kind='unreachable';
+  else if(st===401||st===403) kind='auth';
+  else if(st===429||st===413||(st===400&&/context|length|too (many|large|long)|token|maximum/i.test(msg))) kind='limit';
+  else if(st===404||(st>=400&&st<500&&/model/i.test(msg)&&/not found|does not exist|unknown|invalid/i.test(msg))) kind='model';
+  else if(st>=500||/接続できませんでした|Failed to fetch|NetworkError|Load failed|時間切れ/i.test(msg)) kind='unreachable';
+  else if(/モデルから文章が返りませんでした|提案の形式|提案の検査で止まりました|形式/.test(msg)) kind='format';
+  else if(code==='upstream_error') kind='unreachable';
+  const k=ERR_KINDS[kind]; return {kind, label:k.label, action:k.action, status:st, detail:msg.slice(0,400)};
+};
+AI.conn = {state:null};
+const connSig = ()=>JSON.stringify([settings.provider, settings.provider==='openai-compatible' ? [AI.normBase(settings.openai.baseUrl), settings.openai.model, apiKey.length, apiKey.slice(-4)] : (settings.tier||'default')]);
+AI.isConnected = ()=> !!(AI.conn.state && AI.conn.state.ok && AI.conn.state.sig===connSig());
+const PROBE_TEXT = '次のJSONだけを、説明なしでそのまま返してください: {"format":"atlas-proposal-v1","goal":"接続テスト","operations":[]}';
+function probeJson(text){ const t=stripThink(text).replace(/```(?:json)?/g,''); const i=t.indexOf('{'), j=t.lastIndexOf('}'); if(i<0||j<i) return null; try{ return JSON.parse(t.slice(i,j+1)); }catch(e){ return null; } }
+const probeOk = (o)=> !!o && o.format==='atlas-proposal-v1' && Array.isArray(o.operations);
+function isLocalHost(u){ try{ const h=new URL(u).hostname; return /^(localhost|127\.|\[?::1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || /\.local$/.test(h); }catch(e){ return false; } }
+async function timedFetch(url, init, ms){ const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(), ms); try{ return await fetch(url, Object.assign({}, init, {signal:ctl.signal})); } finally { clearTimeout(t); } }
+AI.connTest = async function(onStep){
+  const steps = [['reach','1. 接続先に届くか'],['auth','2. 認証'],['model','3. モデルの指定'],['format','4. 提案の形式']].map(a=>({id:a[0], title:a[1], status:'wait', msg:'', action:'', detail:''}));
+  const sig = connSig(); let stop=false;
+  const set = (i, status, msg, action, detail)=>{ if(stop) return; Object.assign(steps[i], {status, msg, action:action||'', detail:redact(String(detail||'')).slice(0,400)}); if(status==='ng') stop=true; if(onStep){ try{ onStep(steps); }catch(e){} } };
+  const timeoutMsg = (e)=> (e&&e.name==='AbortError') ? '時間切れです' : 'ネットワークエラーです';
+  if(settings.provider==='openai-compatible'){
+    const o=settings.openai; const base=AI.normBase(o.baseUrl); let mr=null, st=0, mrText='';
+    if(!base) set(0,'ng','接続先URLが未設定です','接続先URL(例: http://localhost:11434/v1)を入力してください');
+    else { try{ mr=await timedFetch(base+'/models', {headers:AI.settings.authHeader()}, 15000); st=mr.status; set(0,'ok','応答がありました(HTTP '+st+')'); }
+      catch(e){ set(0,'ng','接続先に届きません: '+timeoutMsg(e), 'URLとネットワークを確認してください(ローカルAIが起動しているか。Ollamaは環境変数 OLLAMA_ORIGINS="*" が必要なことがあります)', (e&&e.message)||String(e)); } }
+    if(!stop){
+      try{ mrText = await mr.clone().text(); }catch(e){}
+      const k=apiKey; let bad=''; if(k){ if(/\s/.test(k)||/[^\x21-\x7e]/.test(k)) bad='空白または全角文字が含まれています'; else if(k.length<8) bad='短すぎます'; }
+      if(bad) set(1,'ng','キーの形式が正しくありません('+bad+')','キーを貼り付け直してください');
+      else if(st===401||st===403) set(1,'ng','認証に失敗しました(HTTP '+st+')','キーを確認してください(期限切れ・別サービスのキー・権限不足)', mrText);
+      else if(st>=500) set(1,'ng','接続先がエラーを返しました(HTTP '+st+')','しばらく待ってから、もう一度試してください', mrText);
+      else set(1,'ok', k?'キーの形式は正しく、接続先に拒否されませんでした(キー: '+AI.settings.masked()+')':'キーなしで利用できます'+(isLocalHost(base)?'(ローカルAI)':''));
+    }
+    if(!stop){
+      if(!o.model) set(2,'ng','モデル名が未設定です','モデル名を入力してください(例: llama3.1 / gpt-4o-mini)');
+      else { let ids=null; if(mr && mr.ok){ try{ const j=JSON.parse(mrText); const arr=Array.isArray(j.data)?j.data:(Array.isArray(j.models)?j.models:null); if(arr) ids=arr.map(x=>typeof x==='string'?x:(x.id||x.name||x.model||'')).filter(Boolean); }catch(e){} }
+        if(ids){ const hit=ids.some(x=>x===o.model||x.replace(/:latest$/,'')===o.model.replace(/:latest$/,'')); if(hit) set(2,'ok','モデル「'+o.model+'」があります'); else set(2,'ng','モデル「'+o.model+'」が見つかりません','一覧にあるモデル名を指定してください: '+ids.slice(0,6).join(', ')); }
+        else set(2,'warn','モデルの一覧を取得できないため、次の段階で確認します'); }
+    }
+    if(!stop){
+      try{ const r=await timedFetch(base+'/chat/completions', {method:'POST', headers:Object.assign({'Content-Type':'application/json'}, AI.settings.authHeader()), body:JSON.stringify({model:o.model, messages:[{role:'user', content:PROBE_TEXT}], stream:false, temperature:0, max_tokens:300})}, 60000);
+        if(!r.ok){ const b=await r.text().catch(()=>''); const c=AI.classify({code:'upstream_error', message:'HTTP '+r.status+': '+b.slice(0,300)}); if(c.kind==='model'){ Object.assign(steps[2], {status:'ng', msg:'モデル「'+o.model+'」が見つかりません', action:ERR_KINDS.model.action, detail:redact(b).slice(0,400)}); stop=true; }
+          else set(3,'ng',c.label+'(HTTP '+r.status+')', c.action, b); }
+        else { const j=await r.json().catch(()=>null); const ct=(j&&j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||''; const pj=probeJson(ct);
+          if(probeOk(pj)) set(3,'ok','提案の形式(atlas-proposal-v1)が返りました'); else set(3,'ng','応答が提案の形式になりませんでした', ERR_KINDS.format.action, ct); } }
+      catch(e){ set(3,'ng','応答を受け取れません: '+timeoutMsg(e), ERR_KINDS.unreachable.action, (e&&e.message)||String(e)); }
+    }
+  } else {
+    if(!window.claude || typeof window.claude.use!=='function') set(0,'ng','Claude連携が見つかりません','Claudeのアーティファクトとして開いてください(この接続先ではAPIキーは不要です)');
+    else set(0,'ok','Claude連携があります');
+    let sample=null, serr=null;
+    if(!stop){ try{ sample=await window.claude.use('sample'); }catch(e){ serr=e; }
+      if(!sample){ const c=AI.classify(serr||{code:'capability_disabled'}); set(1,'ng', serr?sampleErrorMessage(serr):'この表示環境ではClaude連携を利用できません', c.action, (serr&&serr.message)||''); }
+      else set(1,'ok','Claudeの利用が許可されています'); }
+    if(!stop){ const tier=settings.tier||'default'; const TL={quick:'高速',default:'標準',complex:'高性能'}; if(TL[tier]) set(2,'ok','モデルの種類「'+TL[tier]+'」を使います'); else set(2,'ng','モデルの種類が正しくありません: '+tier,'設定で「高速・標準・高性能」から選んでください'); }
+    if(!stop){ try{ const r=await sample([{role:'user', content:PROBE_TEXT}], {modelTier:settings.tier||'default'}); const pj=probeJson(r&&r.text);
+        if(probeOk(pj)) set(3,'ok','提案の形式(atlas-proposal-v1)が返りました'); else set(3,'ng','応答が提案の形式になりませんでした', ERR_KINDS.format.action, r&&r.text); }
+      catch(e){ const c=AI.classify(e); set(3,'ng', c.label, c.action, e&&e.message); } }
+  }
+  steps.forEach(s=>{ if(s.status==='wait'){ s.status='skip'; s.msg='前の段階が失敗したため確認していません'; } });
+  const ok = steps.every(s=>s.status==='ok'||s.status==='warn') && steps[3].status==='ok';
+  AI.conn.state = {sig, ok, at:Date.now(), steps:JSON.parse(JSON.stringify(steps))};
+  if(onStep){ try{ onStep(steps); }catch(e){} }
+  return {ok, steps};
+};
 AI.registerProvider({
   id:'claude-artifact', label:'Claude(このページを開いているあなたのアカウント)',
   description:'Claudeのアーティファクト機能で動作します。APIキーの設定は不要で、利用料はあなた自身のClaude利用枠から消費されます。',
   async isAvailable(){
     try{ if(!window.claude || typeof window.claude.use!=='function') return {ok:false, reason:'Claudeのアーティファクトとして開いた場合に利用できます'};
       const s = await window.claude.use('sample'); if(!s) return {ok:false, reason:'この表示環境ではClaude連携を利用できません'};
-      return {ok:true, reason:'接続済み'}; }catch(e){ return {ok:false, reason:'Claude連携を確認できませんでした'}; }
+      return {ok:true, reason:'利用できます(「接続テスト」で確認すると「接続済み」になります)'}; }catch(e){ return {ok:false, reason:'Claude連携を確認できませんでした'}; }
   },
   async run({system, turns, gatewayTools, onText, signal, settings}){
     const sample = await window.claude.use('sample');
@@ -22019,7 +22113,7 @@ function compactEnvelope(env, maxChars){
 function capText(s){ return s.length>9000 ? s.slice(0,9000)+'…(省略: idsを減らす/queryを絞ってください)' : s; }
 function gatewayTools(run){
   /* AIへ送った量を数える(段階2: 文脈の記録) */
-  return gatewayToolsRaw(run).map(t=>Object.assign({}, t, {execute: async (input, ctx)=>{ const r = await t.execute(input, ctx); run.sentChars += (typeof r==='string' ? r.length : JSON.stringify(r||'').length); return r; }}));
+  return gatewayToolsRaw(run).map(t=>Object.assign({}, t, {execute: async (input, ctx)=>{ const r = await t.execute(input, ctx); run.sentChars += (typeof r==='string' ? r.length : JSON.stringify(r||'').length); if(!run.limitHit && (run.systemChars||0)+run.sentChars > run.limits.maxContextChars) run.limitHit = `AIに渡す文字数の上限 ${run.limits.maxContextChars.toLocaleString()}字(概算)`; return r; }}));
 }
 function gatewayToolsRaw(run){
   const reg = AI.registry;
@@ -22223,6 +22317,7 @@ async function runAgent(opts){
     const pc = await preChecks(); run.cautions = pc.cautions;
     const system = await buildSystemPrompt(run, {compact: !!prov.compactPrompt && settings.compactPrompt!==false});
     run.systemChars = system.length;
+    if(run.systemChars > run.limits.maxContextChars) throw new AiError(ERR.LIMIT_EXCEEDED, `依頼に関係する世界の要約が大きすぎます(約${run.systemChars.toLocaleString()}字。上限 ${run.limits.maxContextChars.toLocaleString()}字)。依頼を小さく分けてください(例: 国家ごと・時代ごとに別々に依頼)`);
     const turns = (history||[]).concat([{role:'user', content:goal}]);
     const r = await prov.run({system, turns, gatewayTools:gatewayTools(run), onText:ui&&ui.onText, signal:ctl.signal, settings});
     text = r.text||''; truncated = !!r.truncated;
@@ -22248,7 +22343,7 @@ async function runAgent(opts){
   const logEntry = { id:run.id, at:Date.now(), goal:trunc(goal,200), mode, provider:settings.provider, status, calls:run.calls, ms:Date.now()-run.startedAt,
     counts: {created:0, updated:0, deleted:0}, proposed:{created:counts.created, updated:counts.updated, deleted:counts.deleted}, ctx:{system:run.systemChars||0, results:run.sentChars||0},
     steps: run.steps.map(s=>({tool:s.tool, ok:s.ok, code:s.code, summary:trunc(redact(s.summary),100), readOnly:s.readOnly})),
-    reply: trunc(redact(text),600), limit: run.limitHit||'', error: err?redact(err.code==='upstream_error'||!err.code ? (err.message||String(err)) : sampleErrorMessage(err)):'', rolledBack, _entry:entry, _plan:proposal };
+    reply: trunc(redact(text),600), limit: run.limitHit||'', error: err?redact(err.code==='upstream_error'||!err.code ? (err.message||String(err)) : sampleErrorMessage(err)):'', rolledBack, _entry:entry, _plan:proposal, errInfo: err?AI.classify(err):null, ctx2:{system:run.systemChars||0, results:run.sentChars||0, total:(run.systemChars||0)+(run.sentChars||0), limit:run.limits.maxContextChars, approx:true} };
   _log.unshift(logEntry); if(_log.length>60) _log.length=60; persistLog();
   return {text, truncated, status, run, err, proposal, entry, logEntry, rolledBack};
 }
@@ -22256,7 +22351,7 @@ AI.runAgent = runAgent;
 
 /* 提案の実行: 記録した呼び出しをそのまま再実行する(全体で1回のUndo。1つでも失敗したら全体をロールバック) */
 async function executeProposal(proposal, ui){
-  const run = AI.gateway.newRun({goal:proposal.goal, mode:'auto', limits:effectiveLimits(), confirm:ui&&ui.confirm, onStep:ui&&ui.onStep});
+  const run = newApplyRun({goal:proposal.goal, limits:effectiveLimits(), confirm:ui&&ui.confirm, onStep:ui&&ui.onStep});   /* 利用者が提案の実行を選んだときだけ */
   run.limits.maxCalls = Math.max(run.limits.maxCalls, proposal.plan.length+2);
   AI.tx.begin('AI操作(提案を実行): '+trunc(proposal.goal,40));
   let failed=null;
@@ -22366,7 +22461,7 @@ function setTab(k){
 async function refreshProvider(){
   const p = AI.providers.get(S().provider); const el=$('aiProvState'); if(!el) return;
   if(!p){ el.textContent='未選択'; el.className='ai-prov bad'; return; }
-  const a = await p.isAvailable(); el.textContent = (a.ok?'● ':'○ ')+(p.id==='claude-artifact'?'Claude':'外部API')+' '+(a.ok?'接続可':'未接続'); el.title=a.reason; el.className='ai-prov '+(a.ok?'ok':'bad');
+  const a = await p.isAvailable(); const conn=AI.isConnected(); el.textContent = (conn?'● ':'○ ')+(p.id==='claude-artifact'?'Claude':'外部API')+' '+(conn?'接続済み':(a.ok?'未確認(設定で接続テスト)':'未接続')); el.title=a.reason; el.className='ai-prov '+(conn?'ok':'bad');
   AI._provState = a;
 }
 function renderQuick(){
@@ -22412,16 +22507,17 @@ async function send(){
   }
   setRunning(false); running=null; status.hidden=true;
   const finalText = res.text || (res.err ? '' : '(AIからの文章はありませんでした)');
-  if(res.err){ const m = res.logEntry.error; body.textContent = (finalText?finalText+'\n\n':'')+'⚠ '+m; block.classList.add('err'); }
+  if(res.err){ const ci = res.logEntry.errInfo || AI.classify(res.err); body.textContent = (finalText?finalText+'\n\n':'')+'⚠ '+ci.label+'\n→ '+ci.action; body.append(h('details', {class:'ai-errdetail', 'data-ai-errdetail':'1'}, h('summary', {text:'詳細(キーは伏せてあります)'}), h('pre', {text:'分類: '+ci.kind+(ci.status?' / HTTP '+ci.status:'')+'\n'+ci.detail}))); block.classList.add('err'); }
   else body.textContent = finalText;
   if(res.truncated) body.append(h('div', {class:'ai-note', text:'回答が長すぎて途中で切れました。「続きを教えて」と送ってください。'}));
+  if(res.status==='limit' && !res.err) body.append(h('div', {class:'ai-note', 'data-ai-limitnote':'1', text:'上限に達して止まりました。依頼を小さく分けて、もう一度お願いしてください(例: 国家ごと・時代ごと)。'+(res.logEntry.limit?`(${res.logEntry.limit})`:'')}));
   const c = res.logEntry.counts;
   const summary = h('div', {class:'ai-result '+res.status}, h('b', {text:STATUS_LABEL[res.status]||res.status}), h('span', {text:` ・ Tool ${res.run.calls}回 ・ +${c.created} ~${c.updated} -${c.deleted}`+(res.logEntry.limit?` ・ 上限: ${res.logEntry.limit}`:'')}));
   actions.append(summary);
   if(res.entry && AI.canUndo(res.entry)) actions.append(h('button', {class:'btn small', onClick:(ev)=>{ if(AI.undoEntry(res.entry)){ ev.target.disabled=true; ev.target.textContent='取り消しました'; } else toast('この操作より後に別の編集があるため、「元に戻す」から順に取り消してください','err'); }, text:'この変更を元に戻す'}));
   (res.run.proposals||[]).forEach(p=>actions.append(proposalCard(p, block)));
   if(res.run.finalInfo && res.run.finalInfo.overCap) actions.append(h('div', {class:'ai-note', text:`操作が${res.run.finalInfo.overCap.total}件あり、上限(${res.run.finalInfo.overCap.cap}件)を超えたため、提案を作りませんでした。依頼を小さく分けてください。`}));
-  if(AI.lastContext) actions.append(h('div', {class:'ai-dim ai-small', 'data-ai-ctx':'1', text:`AIへ送った量: 指示文 ${AI.lastContext.system.toLocaleString()}字 + 取得結果 ${AI.lastContext.results.toLocaleString()}字`}));
+  if(AI.lastContext) actions.append(h('div', {class:'ai-dim ai-small', 'data-ai-ctx':'1', text:`AIへ送った量(概算): 指示文 ${AI.lastContext.system.toLocaleString()}字 + 取得結果 ${AI.lastContext.results.toLocaleString()}字(上限 ${Object.assign({}, AI.DEFAULT_LIMITS, S().limits||{}).maxContextChars.toLocaleString()}字)`}));
   history.push({role:'user', content:goal});
   const digest = res.run.steps.length ? '\n\n[実行したTool: '+[...new Set(res.run.steps.map(s=>s.tool))].slice(0,12).join(', ')+' / 結果: '+(STATUS_LABEL[res.status]||res.status)+']' : '';
   history.push({role:'assistant', content:(finalText||'(応答なし)')+digest});
@@ -22495,6 +22591,8 @@ function renderLog(){
       h('div', {class:'ai-logrow'}, h('span', {class:'ai-lab', text:'目的'}), h('span', {text:e.goal})),
       h('div', {class:'ai-logrow'}, h('span', {class:'ai-lab', text:'使用Tool'}), h('span', {}, groups.length ? groups.map(g=>h('span', {class:'ai-tl '+(g.ng?'ng':'ok')}, (g.ng&&!g.ok?'✗ ':'✓ ')+((AI.registry.get(g.tool)||{}).name||g.tool)+(g.ok+g.ng>1?` ×${g.ok+g.ng}`:'')+(g.ng&&g.ok?`(失敗${g.ng})`:''))) : 'なし')),
       h('div', {class:'ai-logrow'}, h('span', {class:'ai-lab', text:'変更'}), h('span', {class:'ai-mono', text:`+ ${e.counts.created} 件   ~ ${e.counts.updated} 件   - ${e.counts.deleted} 件`+(e.rolledBack?'(取り消し済み)':'')})),
+      e.ctx2 ? h('div', {class:'ai-logrow', 'data-ai-logctx':'1'}, h('span', {class:'ai-lab', text:'送った量'}), h('span', {text:`約${e.ctx2.total.toLocaleString()}字(指示文 ${e.ctx2.system.toLocaleString()} + 取得結果 ${e.ctx2.results.toLocaleString()}・上限 ${(e.ctx2.limit||0).toLocaleString()})`})) : null,
+      e.errInfo ? h('div', {class:'ai-logrow'}, h('span', {class:'ai-lab', text:'分類'}), h('span', {text:e.errInfo.label+' → '+e.errInfo.action})) : null,
       e.error ? h('div', {class:'ai-logrow'}, h('span', {class:'ai-lab', text:'エラー'}), h('span', {text:e.error})) : null,
       e.limit ? h('div', {class:'ai-logrow'}, h('span', {class:'ai-lab', text:'上限'}), h('span', {text:e.limit})) : null,
       (e._entry && AI.canUndo(e._entry)) ? h('button', {class:'btn small', onClick:()=>{ AI.undoEntry(e._entry); renderLog(); }, text:'この操作を元に戻す'}) : null);
@@ -22535,27 +22633,43 @@ function renderSettings(){
   const oa = s.provider==='openai-compatible' ? h('div', {class:'ai-fields'},
     h('label', {text:'接続先URL (/v1 まで)'}), h('input', {id:'aiBase', value:o.baseUrl, placeholder:'http://localhost:11434/v1', onChange:(e)=>{ o.baseUrl=e.target.value.trim(); AI.settings.save(); refreshProvider(); }}),
     h('label', {text:'モデル名'}), h('input', {id:'aiModel', value:o.model, placeholder:'例: llama3.1 / gpt-4o-mini', onChange:(e)=>{ o.model=e.target.value.trim(); AI.settings.save(); refreshProvider(); }}),
-    h('label', {text:'APIキー(ローカルAIは空でOK)'}), h('input', {id:'aiKey', type:'password', autocomplete:'off', value:AI.settings.hasKey()?'••••••••••••':'', placeholder:'sk-…', onChange:(e)=>{ if(e.target.value && !/^•+$/.test(e.target.value)) { AI.settings.setApiKey(e.target.value, $('aiRemember').checked); e.target.value='••••••••••••'; } }}),
+    h('label', {text:'APIキー(ローカルAIは空でOK)'}), h('input', {id:'aiKey', type:'password', autocomplete:'off', value:AI.settings.masked(), placeholder:'sk-…', onChange:(e)=>{ if(e.target.value && e.target.value.indexOf('•')!==0) { AI.settings.setApiKey(e.target.value, $('aiRemember').checked); e.target.value=AI.settings.masked(); renderConn(); refreshProvider(); } }}),
     h('label', {class:'ai-check'}, h('input', {type:'checkbox', id:'aiRemember', checked:o.rememberKey, onChange:(e)=>{ AI.settings.remember(e.target.checked); }}), '  このブラウザにキーを保存する(共有PCでは非推奨)'),
-    h('div', {class:'ai-row'}, h('button', {class:'btn small', onClick:testConnection, text:'接続テスト'}), h('button', {class:'btn small', onClick:()=>{ AI.settings.clearApiKey(); renderSettings(); }, text:'キーを削除'}), h('span', {class:'ai-dim ai-small', id:'aiTestRes'})),
-    h('div', {class:'ai-dim ai-small', text:'キーは世界データ・書き出しJSON・Undo履歴・AIログには含まれません。このページにキーが埋め込まれていることもありません。'})) : null;
+    h('div', {class:'ai-row'}, h('button', {class:'btn small', onClick:()=>{ AI.settings.clearApiKey(); renderSettings(); }, text:'キーを削除'})),
+    h('div', {class:'ai-dim ai-small', text:'キーは、既定ではこの画面の中(メモリ)だけに置き、再読み込みやブラウザを閉じると消えます。「このブラウザにキーを保存する」を選んだときだけ、この端末に残ります。画面には末尾の数文字だけを表示します。世界データ・書き出しJSON・Undo履歴・AIログには含まれません。このページにキーが埋め込まれていることもありません。'})) : null;
   const claudeOpts = s.provider==='claude-artifact' ? h('div', {class:'ai-fields'}, h('label', {text:'モデルの種類'}), h('select', {id:'aiTier', onChange:(e)=>{ s.tier=e.target.value; AI.settings.save(); }}, [['quick','高速(簡単な操作向け)'],['default','標準'],['complex','高性能(複雑な計画向け・遅い)']].map(([v,l])=>h('option', {value:v, text:l, selected:s.tier===v})))) : null;
   const L = Object.assign({}, AI.DEFAULT_LIMITS, s.limits||{});
   const lim = (key,label,min,max)=> h('label', {class:'ai-lim'}, h('span', {text:label}), h('input', {type:'number', min, max, value:L[key], onChange:(e)=>{ const v=Math.max(min,Math.min(max,Number(e.target.value)||AI.DEFAULT_LIMITS[key])); s.limits=s.limits||{}; s.limits[key]=v; e.target.value=v; AI.settings.save(); }}));
   pane.replaceChildren(h('div', {class:'ai-scroll'},
-    h('h4', {text:'AIの接続先'}), provs, claudeOpts, oa,
+    h('h4', {text:'AIの接続先'}), provs, claudeOpts, oa, connBox(),
     h('h4', {text:'実行モード'}), Object.keys(MODES).map(k=>h('label', {class:'ai-radio'}, h('input', {type:'radio', name:'aiMode', value:k, checked:s.mode===k, onChange:()=>{ s.mode=k; AI.settings.save(); syncMode(); }}), h('span', {}, h('b', {text:MODES[k].label}), h('div', {class:'ai-dim ai-small', text:MODES[k].desc})))),
-    h('h4', {text:'安全のための上限'}), h('div', {class:'ai-limgrid'}, lim('maxCalls','Tool呼び出し回数',1,200), lim('maxChanges','変更件数',1,2000), lim('maxSeconds','実行時間(秒)',10,900), lim('bulkThreshold','「大量変更」とみなす件数',2,100), lim('maxPixelsPerCall','1回に塗れるピクセル数',1000,16000000), lim('maxPixelsTotal','1回の依頼で塗れる総ピクセル数',1000,64000000)),
+    h('h4', {text:'安全のための上限'}), h('div', {class:'ai-limgrid'}, lim('maxCalls','Tool呼び出し回数',1,200), lim('maxChanges','変更件数',1,2000), lim('maxSeconds','実行時間(秒)',10,900), lim('bulkThreshold','「大量変更」とみなす件数',2,100), lim('maxPixelsPerCall','1回に塗れるピクセル数',1000,16000000), lim('maxPixelsTotal','1回の依頼で塗れる総ピクセル数',1000,64000000), lim('maxContextChars','AIに渡す文字数の上限(概算)',2000,200000)),
     h('label', {class:'ai-check'}, h('input', {type:'checkbox', checked:s.compactPrompt!==false, onChange:(e)=>{ s.compactPrompt=e.target.checked; AI.settings.save(); }}), '  OpenAI互換/ローカルAIには短い指示文を使う(推奨。長いとOllamaの文脈長を超えて返答が空になります)'),
     h('label', {class:'ai-check'}, h('input', {type:'checkbox', checked:s.rollbackOnFailure, onChange:(e)=>{ s.rollbackOnFailure=e.target.checked; AI.settings.save(); }}), '  AIの実行自体が失敗したとき、その依頼の変更をすべて自動で取り消す'),
     h('div', {class:'ai-dim ai-small', text:'上限に達するとAIは安全に停止し、それまでの結果を報告します(変更は残り、1回の「元に戻す」で取り消せます)。AIも現在の権限(管理者/国家編集者など)に従い、あなたに許可されていない操作はできません。'}),
     h('div', {class:'ai-dim ai-small', id:'aiRoleNote', text:'現在の権限: '+roleLabel(currentRole)})));
 }
-async function testConnection(){
-  const out=$('aiTestRes'); out.textContent='確認中…'; const o=S().openai;
-  try{ const r = await fetch(AI.normBase(o.baseUrl)+'/models', {headers: AI.settings.authHeader()}); out.textContent = r.ok ? '接続できました' : ('応答エラー HTTP '+r.status); }
-  catch(e){ out.textContent = redact('接続できません: '+(e&&e.message||e)+AI.corsHint(e)); }
+const STEP_MARK = {ok:'✓', ng:'✗', warn:'△', skip:'－', wait:'…'};
+function renderConn(steps){
+  const box=$('aiTestSteps'); const st=$('aiConnState'); if(!box) return;
+  const cur = steps || (AI.conn.state && AI.conn.state.steps) || null; const conn=AI.isConnected();
+  if(st){ st.textContent = conn ? '接続済み' : (cur ? '未接続(下の結果を確認してください)' : '未確認(「接続テスト」を押してください)'); st.className = 'ai-conn '+(conn?'ok':'bad'); st.setAttribute('data-ai-conn', conn?'ok':'no'); }
+  box.replaceChildren(...(cur||[]).map(s=>h('div', {class:'ai-tstep '+s.status, 'data-ai-tstep':s.id, 'data-ai-tstatus':s.status},
+    h('div', {}, h('b', {text:STEP_MARK[s.status]+' '+s.title}), h('span', {text:'  '+(s.msg||(s.status==='wait'?'確認中…':''))})),
+    s.status==='ng' && s.action ? h('div', {class:'ai-tact', text:'→ 次に: '+s.action}) : null,
+    s.detail ? h('details', {class:'ai-errdetail'}, h('summary', {text:'詳細'}), h('pre', {text:s.detail})) : null)));
 }
+function connBox(){
+  return h('div', {class:'ai-testbox'}, h('h4', {text:'接続の確認'}),
+    h('div', {class:'ai-row'}, h('button', {class:'btn small', id:'aiTestBtn', onClick:testConnection, text:'接続テスト'}), h('span', {id:'aiConnState', class:'ai-conn'}), h('span', {style:'flex:1'}), h('button', {class:'btn small', id:'aiExportBtn', onClick:()=>download('atlas-ai-settings.json', AI.settings.exportJson(), 'application/json'), text:'AI設定を書き出す(キーは含みません)'})),
+    h('div', {id:'aiTestSteps', class:'ai-teststeps'}));
+}
+async function testConnection(){
+  const b=$('aiTestBtn'); if(b) b.disabled=true;
+  try{ await AI.connTest((steps)=>renderConn(steps)); }catch(e){ toast('接続テストを実行できませんでした','err'); }
+  if(b) b.disabled=false; renderConn(); refreshProvider();
+}
+
 
 /* ---------- 起動 ---------- */
 function init(){
