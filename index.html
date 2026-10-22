@@ -18744,6 +18744,8 @@ function typeOk(t,v){ const ty=typeOf(v); if(t==='integer') return ty==='number'
 function checkValue(sch, v, path, errs, ctx){
   if(!sch) return;
   const types=Array.isArray(sch.type)?sch.type:(sch.type?[sch.type]:[]);
+  /* 「空」の表し方: アプリは、空の数値(年・人口・面積など)を '' で持つ。値が null も許す数値の項目では、'' を「空」として受け入れる(保存の形式は変えない)。文字列の数字('500')・その他の文字列は、従来どおり拒否する */
+  if(v==='' && types.indexOf('null')>=0 && types.some(t=>t==='integer'||t==='number')) return;
   if(types.length && !types.some(t=>typeOk(t,v))){ errs.push({path, code:'type', message:`${path}: 型が違います(期待: ${types.join('|')}、実際: ${typeOf(v)})`}); return; }
   if(sch.enum && !sch.enum.some(e=>e===v)){ errs.push({path, code:'enum', message:`${path}: 次のいずれかにしてください: ${sch.enum.join(', ')}`}); return; }
   if(typeof v==='string'){
@@ -21919,7 +21921,27 @@ function sampleErrorMessage(e){
     upstream_error:'Claudeとの通信に失敗しました', tools_unavailable:'この環境ではToolを使った実行に対応していません', capability_disabled:'この表示環境ではClaude連携を使えません', not_declared:'このページにはClaude連携が設定されていません' }[code];
   return m || ('AI呼び出しに失敗しました'+(code?`(${code})`:''));
 }
+const FIELD_JA = {name:'名前',title:'題名',description:'説明',notes:'メモ',ended:'終了年',founded:'建国年(開始年)',birth:'生年',death:'没年',year:'年',start:'開始年',end:'終了年',startYear:'開始年',endYear:'終了年',signYear:'署名年',effectiveYear:'発効年',dissolved:'解散年',reignStart:'在位開始年',reignEnd:'在位終了年',population:'人口',area:'面積',x:'X座標',y:'Y座標',day:'日',month:'月',code:'コード',flagColor:'旗の色',borderColor:'国境の色',government:'政体',type:'種類',value:'値',metric:'指標',lang:'言語',headword:'見出し語',nationId:'所属国',nationA:'国A',nationB:'国B',capitalCityId:'首都',regionId:'地域',language:'言語'};
+AI.describeProposalErrors = function(list){
+  return (list||[]).slice(0,12).map(e=>{
+    const op=e.op||{}; const c=op.collection&&AI.collections.get(op.collection); const noun=c?c.noun:(op.op==='tool'?'操作':'提案');
+    const m=/\.data\.([A-Za-z0-9_]+)/.exec(e.path||'')||/^operations\[\d+\]\.([A-Za-z0-9_]+)$/.exec(e.path||''); const f=m?m[1]:''; const fj=f?(FIELD_JA[f]||f):'';
+    const where=noun+(fj?' → '+fj:'')+(e.index>=0?`(操作${e.index+1})`:''); let reason, action;
+    switch(e.code){
+      case 'type': { const t=((/期待: ([^、]+)/.exec(e.message||''))||[])[1]||''; reason=/integer|number/.test(t)?'数値(整数)を入れてください。文字や小数は使えません':(t.indexOf('string')>=0?'文字で入れてください':'値の型が違います'); action=fj?`依頼に${fj}を数字で書いて、もう一度送ってください`:'依頼の値を直して、もう一度送ってください'; break; }
+      case 'required': reason='必須の項目が入っていません'; action=`依頼に${fj||'必要な項目'}を書いて、もう一度送ってください`; break;
+      case 'pattern': reason=/color|Color/.test(f)?'色は「#」と16進数6桁(例: #3366cc)で入れてください':'形式が違います'; action='正しい形式で、もう一度依頼してください'; break;
+      case 'enum': reason='選べる値ではありません(選べるもの: '+(((/いずれかにしてください: (.*)$/.exec(e.message||''))||[])[1]||'')+')'; action='選べる値の中から指定して、もう一度送ってください'; break;
+      case 'reference': case 'not_found': reason='参照先のIDが見つかりません'; action='先に参照先を作るか、既存のものを指定して、もう一度送ってください'; break;
+      case 'unknown_field': reason='この項目は使えません'; action='項目名を確認して、もう一度送ってください'; break;
+      case 'minLength': case 'maxLength': reason=(e.message||'').replace(/^[^:]*:\s*/,''); action='文字数を直して、もう一度送ってください'; break;
+      default: reason=(e.message||'').replace(/^[^:]*:\s*/,'')||'内容に誤りがあります'; action='内容を直して、もう一度送ってください';
+    }
+    return {where, reason, action, detail:redact(String(e.message||''))};
+  });
+};
 const ERR_KINDS = {
+  invalid:{label:'提案の検査で止まりました(世界は変わっていません)', action:'下の項目を直して、もう一度依頼してください'},
   unreachable:{label:'接続先に届きません', action:'接続先のURLとネットワークを確認してください'},
   auth:{label:'認証に失敗しました', action:'APIキー(またはClaudeの利用許可)を確認してください'},
   model:{label:'モデルが見つかりません', action:'モデル名を確認してください(接続先の一覧にある名前を指定)'},
@@ -21929,6 +21951,7 @@ const ERR_KINDS = {
 };
 AI.ERR_KINDS = ERR_KINDS;
 AI.classify = function(e){
+  if(e && e.proposalErrors){ const items=AI.describeProposalErrors(e.proposalErrors); const k=ERR_KINDS.invalid; return {kind:'invalid', label:k.label, action:k.action, status:0, items, detail:items.map(i=>i.where+': '+i.detail).join('\n').slice(0,800)}; }
   const code = e && e.code; const msg = redact(String((e&&e.message)||e||'')); const m = /^HTTP (\d{3})/.exec(msg); const st = m?Number(m[1]):0; let kind='other';
   if(['not_granted','sampling_disabled','session_expired'].indexOf(code)>=0) kind='auth';
   else if(['rate_limited','prompt_too_large','limit','ERROR_LIMIT_EXCEEDED'].indexOf(code)>=0) kind='limit';
@@ -21938,7 +21961,7 @@ AI.classify = function(e){
   else if(st===429||st===413||(st===400&&/context|length|too (many|large|long)|token|maximum/i.test(msg))) kind='limit';
   else if(st===404||(st>=400&&st<500&&/model/i.test(msg)&&/not found|does not exist|unknown|invalid/i.test(msg))) kind='model';
   else if(st>=500||/接続できませんでした|Failed to fetch|NetworkError|Load failed|時間切れ/i.test(msg)) kind='unreachable';
-  else if(/モデルから文章が返りませんでした|提案の形式|提案の検査で止まりました|形式/.test(msg)) kind='format';
+  else if(/モデルから文章が返りませんでした|提案の形式|JSONとして|読めません/.test(msg)) kind='format';
   else if(code==='upstream_error') kind='unreachable';
   const k=ERR_KINDS[kind]; return {kind, label:k.label, action:k.action, status:st, detail:msg.slice(0,400)};
 };
@@ -22000,6 +22023,12 @@ AI.connTest = async function(onStep){
   if(onStep){ try{ onStep(steps); }catch(e){} }
   return {ok, steps};
 };
+const WORK_RE = /(作って|作成|つくって|提案して|追加|足して|加えて|増やして|書いて|入れて|設定して|変更|更新|修正|直して|削除|消して|整えて|埋めて|補って|生成|登録|詳細にして|充実|拡充|膨らま)/;
+const QUESTION_RE = /([?？]\s*$|ですか|でしょうか|どう(思|でしょ)|教えて|説明して|要約して|分析して|調べて|確認して|見せて|一覧)/;
+AI.isWorkRequest = (goal)=>{ const g=String(goal||''); return WORK_RE.test(g) && !QUESTION_RE.test(g); };
+const askedQuestion = (t)=> /[?？]/.test(String(t||'').slice(-160));
+const NUDGE_TEXT = '作業の依頼です。確認だけで終わらせず、いま call_tools を呼んで、書き込み(作成・変更・削除)を提案に入れてください。必要な情報が足りない場合だけ、何が足りないかを質問してください。';
+AI.NUDGE_TEXT = NUDGE_TEXT;
 AI.registerProvider({
   id:'claude-artifact', label:'Claude(このページを開いているあなたのアカウント)',
   description:'Claudeのアーティファクト機能で動作します。APIキーの設定は不要で、利用料はあなた自身のClaude利用枠から消費されます。',
@@ -22113,7 +22142,7 @@ function compactEnvelope(env, maxChars){
 function capText(s){ return s.length>9000 ? s.slice(0,9000)+'…(省略: idsを減らす/queryを絞ってください)' : s; }
 function gatewayTools(run){
   /* AIへ送った量を数える(段階2: 文脈の記録) */
-  return gatewayToolsRaw(run).map(t=>Object.assign({}, t, {execute: async (input, ctx)=>{ const r = await t.execute(input, ctx); run.sentChars += (typeof r==='string' ? r.length : JSON.stringify(r||'').length); if(!run.limitHit && (run.systemChars||0)+run.sentChars > run.limits.maxContextChars) run.limitHit = `AIに渡す文字数の上限 ${run.limits.maxContextChars.toLocaleString()}字(概算)`; return r; }}));
+  return gatewayToolsRaw(run).map(t=>Object.assign({}, t, {execute: async (input, ctx)=>{ run.tcalls=(run.tcalls||0)+1; const r = await t.execute(input, ctx); run.sentChars += (typeof r==='string' ? r.length : JSON.stringify(r||'').length); if(!run.limitHit && (run.systemChars||0)+run.sentChars > run.limits.maxContextChars) run.limitHit = `AIに渡す文字数の上限 ${run.limits.maxContextChars.toLocaleString()}字(概算)`; return r; }}));
 }
 function gatewayToolsRaw(run){
   const reg = AI.registry;
@@ -22208,6 +22237,7 @@ async function buildSystemPrompt(run, opts){
     return `あなたは「架空世界管理ツール」を操作するアシスタントです。日本語で簡潔に答えます。
 操作手段は3つのToolだけ: list_tools(機能を探す) / describe_tool(仕様を見る) / call_tools(実行)。JavaScript実行や画面操作はできません。
 手順: ①call_tools で app.get_state を呼び現状把握 ②list_tools で必要な機能を探す ③describe_tool で引数を確認 ④call_tools で実行 ⑤各結果の success を確認して報告。
+- 作る・追加・変更・提案などの作業の依頼には、②③の確認のあとで必ず④call_tools を呼び、書き込みを提案に入れる。確認だけで文章の回答に進まない。足りない情報があるときだけ、何が足りないかを質問する。
 - list_tools に無い機能は「できません」と伝える。実行していないことを「できた」と言わない。success:false は失敗として報告する。
 - IDは検索・一覧で得たものだけを使う。推測しない。頼まれていない削除・上書きをしない。作る前に data.search で重複を確認する。
 - データの種類と項目は data.list_collections / data.describe_collection で確認する。
@@ -22224,6 +22254,7 @@ ${modeText}
 - 各Toolの結果は success で成否を判断します。success:false のものを「できました」と報告してはいけません。errors[].code と hint を読み、直せるなら修正して再試行、直せないなら失敗として報告してください。
   ERROR_VALIDATION_FAILED=引数/項目の誤り, ERROR_INVALID_REFERENCE=存在しないID, ERROR_NOT_FOUND=対象なし, ERROR_PERMISSION_DENIED=権限なし(再試行しない), ERROR_OUT_OF_BOUNDS=座標範囲外, ERROR_CONFLICT=重複など競合, ERROR_LIMIT_EXCEEDED=上限(以後Toolを呼ばず報告), ERROR_USER_DECLINED=ユーザー拒否(再試行しない), ERROR_UNSUPPORTED=未対応
 - 進め方: ①app.get_state や analysis系で現状把握 → ②必要なToolを list_tools / describe_tool で選ぶ → ③計画 → ④call_tools で実行(IDは必ず検索して得たものを使い、推測しない) → ⑤結果を確認(必要なら analysis.integrity_check) → ⑥最終報告。
+- 作る・追加・変更・提案などの作業の依頼には、list_tools / describe_tool で確認したあと、必ず call_tools を呼んで書き込みを提案に入れてください。確認だけで文章の回答に進んではいけません。足りない情報があるときだけ、何が足りないかを質問してください。作業できないと判断したときは、その具体的な理由を答えてください。
 - 実行できる回数(往復)には限りがあります。読み取りをまとめて取得し、書き込みも call_tools に複数まとめて渡してください。
 - 既にあるものを重複して作らないでください(作る前に data.search)。ユーザーの既存データを、頼まれていないのに削除・上書きしないでください。
 - 地図の座標は「地図単位」です。地図への書き込みは「現在の年に有効な地図状態」に行われます。国家を作っただけでは領土は地図に現れず、map.paint(layer:"nation")で塗る必要があります。
@@ -22287,17 +22318,17 @@ async function finalizeProposals(run, goal, status, ui){
     else if(ans==='first'){ parts=[ops.slice(0,cap)]; note=`操作が${ops.length}件あったため、先頭の${cap}件だけを提案にしました`; }
     else return {proposals:[], status:'cap-cancelled', overCap:{total:ops.length, cap}};
   }
-  const proposals=[]; const errors=[];
+  const proposals=[]; const errors=[]; const det=[];
   parts.forEach((part,i)=>{
     const P={format:'atlas-proposal-v1', worldId:w.id, baseRevision:Number(w.revision)||0, createdBy:'アプリ内AI', goal: parts.length>1 ? `${goal}(${i+1}/${parts.length})` : goal, operations:part, cautions:(run.cautions||[]).slice(0,14)};
     if(note) P.cautions.unshift(note);
     if(parts.length>1 && i>0) P.cautions.unshift('分けた提案の続きです。前の提案を先に承認してください(前の提案で作るデータを参照している場合があります)');
     const v=AtlasProposal.validate(P, true);
     const real=v.errors.filter(e=>!(i>0 && (e.code==='reference'||e.code==='not_found')));
-    if(real.length) errors.push(`提案${i+1}: ${real[0].message}`); else proposals.push(P);
+    if(real.length){ errors.push(`提案${i+1}: ${real[0].message}`); real.forEach(e=>det.push({index:e.index, path:e.path, code:e.code, message:e.message, op:part[e.index]||null})); } else proposals.push(P);
   });
-  if(errors.length && !proposals.length) return {proposals:[], status:'error', validationErrors:errors};
-  return {proposals, status: status==='error'?'error':'proposed', validationErrors:errors};
+  if(errors.length && !proposals.length) return {proposals:[], status:'error', validationErrors:errors, validationDetails:det};
+  return {proposals, status: status==='error'?'error':'proposed', validationErrors:errors, validationDetails:det};
 }
 AI._finalize = finalizeProposals;
 async function runAgent(opts){
@@ -22321,6 +22352,15 @@ async function runAgent(opts){
     const turns = (history||[]).concat([{role:'user', content:goal}]);
     const r = await prov.run({system, turns, gatewayTools:gatewayTools(run), onText:ui&&ui.onText, signal:ctl.signal, settings});
     text = r.text||''; truncated = !!r.truncated;
+    run.workRequest = AI.isWorkRequest(goal);
+    const attemptedWrite = ()=> run.steps.some(s=>!s.readOnly);
+    if(run.workRequest && !attemptedWrite() && (run.tcalls||0)>0 && !askedQuestion(text) && !run.stopped && !run.limitHit && !(ctl.signal&&ctl.signal.aborted)){
+      run.nudged = true;   /* 確認だけで文章の回答に進んだとき、1回だけ「作業を実行してください」と送り直す */
+      if(ui && ui.onText) ui.onText((text?text+'\n\n':'')+'(作業がまだ実行されていないため、もう一度、実行を依頼しています…)');
+      const turns2 = turns.concat([{role:'assistant', content:text||'(確認しました)'}, {role:'user', content:NUDGE_TEXT}]);
+      const r2 = await prov.run({system, turns:turns2, gatewayTools:gatewayTools(run), onText:ui&&ui.onText, signal:ctl.signal, settings});
+      text = (text?text+'\n\n':'')+(r2.text||''); truncated = truncated || !!r2.truncated;
+    }
   }catch(e){
     err = e; text = (e && e.text) || '';
   }
@@ -22331,7 +22371,8 @@ async function runAgent(opts){
   let entry=null, proposal=null, rolledBack=false;
   if(mode==='propose'){
     const fin = await finalizeProposals(run, goal, status, ui); status=fin.status; run.proposals=fin.proposals; run.finalInfo=fin; proposal = fin.proposals[0]||null;
-    if(fin.validationErrors && fin.validationErrors.length && !err) err = new AiError(ERR.VALIDATION_FAILED, '提案の検査で止まりました: '+fin.validationErrors[0]);
+    if(status==='ok-noop' || (status==='ok' && !(run.ops||[]).length)) status = !run.workRequest ? 'answered' : (askedQuestion(text) ? 'asked' : 'noop-check');   /* 作業が実行されたか(提案が出たか)を、必ず結果に出す */
+    if(fin.validationErrors && fin.validationErrors.length && !err){ err = new AiError(ERR.VALIDATION_FAILED, '提案の検査で止まりました: '+fin.validationErrors[0]); err.proposalErrors = fin.validationDetails||[]; }
   } else if(status==='error' && settings.rollbackOnFailure){
     AI.tx.rollback(); rolledBack = true; status='error-rolledback';
   } else {
@@ -22343,7 +22384,7 @@ async function runAgent(opts){
   const logEntry = { id:run.id, at:Date.now(), goal:trunc(goal,200), mode, provider:settings.provider, status, calls:run.calls, ms:Date.now()-run.startedAt,
     counts: {created:0, updated:0, deleted:0}, proposed:{created:counts.created, updated:counts.updated, deleted:counts.deleted}, ctx:{system:run.systemChars||0, results:run.sentChars||0},
     steps: run.steps.map(s=>({tool:s.tool, ok:s.ok, code:s.code, summary:trunc(redact(s.summary),100), readOnly:s.readOnly})),
-    reply: trunc(redact(text),600), limit: run.limitHit||'', error: err?redact(err.code==='upstream_error'||!err.code ? (err.message||String(err)) : sampleErrorMessage(err)):'', rolledBack, _entry:entry, _plan:proposal, errInfo: err?AI.classify(err):null, ctx2:{system:run.systemChars||0, results:run.sentChars||0, total:(run.systemChars||0)+(run.sentChars||0), limit:run.limits.maxContextChars, approx:true} };
+    reply: trunc(redact(text),600), limit: run.limitHit||'', error: err?redact(err.code==='upstream_error'||!err.code ? (err.message||String(err)) : sampleErrorMessage(err)):'', rolledBack, _entry:entry, _plan:proposal, errInfo: err?AI.classify(err):null, nudged:!!run.nudged, workRequest:!!run.workRequest, ctx2:{system:run.systemChars||0, results:run.sentChars||0, total:(run.systemChars||0)+(run.sentChars||0), limit:run.limits.maxContextChars, approx:true} };
   _log.unshift(logEntry); if(_log.length>60) _log.length=60; persistLog();
   return {text, truncated, status, run, err, proposal, entry, logEntry, rolledBack};
 }
@@ -22410,7 +22451,7 @@ const $ = (id)=>document.getElementById(id);
 const MODES = {
   propose:{label:'提案のみ', desc:'AIは変更の「提案」を作るだけです。あなたが内容を確認して承認するまで、世界は変わりません。'},
 };
-const STATUS_LABEL = { 'cap-cancelled':'提案を作らず終了(件数が多すぎるため)', ok:'成功', partial:'一部失敗', error:'失敗', 'error-rolledback':'失敗(変更は取り消し済み)', stopped:'停止(途中までの変更は残っています)', limit:'上限に達して停止', proposed:'提案あり(未承認・世界は変わっていません)', 'ok-noop':'完了(変更なし)' };
+const STATUS_LABEL = { asked:'AIから確認の質問があります(作業はまだ実行されていません)', 'noop-check':'作業は実行されませんでした(確認のみ)', answered:'回答のみ(作業の依頼ではないため、提案はありません)', 'cap-cancelled':'提案を作らず終了(件数が多すぎるため)', ok:'成功', partial:'一部失敗', error:'失敗', 'error-rolledback':'失敗(変更は取り消し済み)', stopped:'停止(途中までの変更は残っています)', limit:'上限に達して停止', proposed:'提案あり(未承認・世界は変わっていません)', 'ok-noop':'完了(変更なし)' };
 const KIND_LABEL = {read:'読取', analyze:'分析', write:'変更', delete:'削除', execute:'実行'};
 const RISK_LABEL = {safe:'安全', normal:'通常', dangerous:'危険', destructive:'破壊的'};
 
@@ -22507,13 +22548,14 @@ async function send(){
   }
   setRunning(false); running=null; status.hidden=true;
   const finalText = res.text || (res.err ? '' : '(AIからの文章はありませんでした)');
-  if(res.err){ const ci = res.logEntry.errInfo || AI.classify(res.err); body.textContent = (finalText?finalText+'\n\n':'')+'⚠ '+ci.label+'\n→ '+ci.action; body.append(h('details', {class:'ai-errdetail', 'data-ai-errdetail':'1'}, h('summary', {text:'詳細(キーは伏せてあります)'}), h('pre', {text:'分類: '+ci.kind+(ci.status?' / HTTP '+ci.status:'')+'\n'+ci.detail}))); block.classList.add('err'); }
+  if(res.err){ const ci = res.logEntry.errInfo || AI.classify(res.err); body.textContent = (finalText?finalText+'\n\n':'')+'⚠ '+ci.label+(ci.items?'\n'+ci.items.map(it=>'・'+it.where+': '+it.reason+'\n   → '+it.action).join('\n'):'\n→ '+ci.action); body.setAttribute('data-ai-errkind', ci.kind); body.append(h('details', {class:'ai-errdetail', 'data-ai-errdetail':'1'}, h('summary', {text:'詳細(技術的な項目名と値。キーは伏せてあります)'}), h('pre', {text:'分類: '+ci.kind+(ci.status?' / HTTP '+ci.status:'')+'\n'+ci.detail}))); block.classList.add('err'); }
   else body.textContent = finalText;
   if(res.truncated) body.append(h('div', {class:'ai-note', text:'回答が長すぎて途中で切れました。「続きを教えて」と送ってください。'}));
   if(res.status==='limit' && !res.err) body.append(h('div', {class:'ai-note', 'data-ai-limitnote':'1', text:'上限に達して止まりました。依頼を小さく分けて、もう一度お願いしてください(例: 国家ごと・時代ごと)。'+(res.logEntry.limit?`(${res.logEntry.limit})`:'')}));
   const c = res.logEntry.counts;
   const summary = h('div', {class:'ai-result '+res.status}, h('b', {text:STATUS_LABEL[res.status]||res.status}), h('span', {text:` ・ Tool ${res.run.calls}回 ・ +${c.created} ~${c.updated} -${c.deleted}`+(res.logEntry.limit?` ・ 上限: ${res.logEntry.limit}`:'')}));
   actions.append(summary);
+  if(res.status==='noop-check') actions.append(h('div', {class:'ai-note', 'data-ai-noop':'1'}, h('div', {text:'AIは確認(一覧・仕様の取得など)をしただけで、書き込みを提案に入れませんでした。'+(res.run.nudged?'「作業を実行してください」と1回だけ送り直しましたが、実行されませんでした。':'')}), h('button', {class:'btn small', 'data-ai-rerun':'1', onClick:()=>{ if(running) return; $('aiInput').value=goal; send(); }, text:'もう一度実行'})));
   if(res.entry && AI.canUndo(res.entry)) actions.append(h('button', {class:'btn small', onClick:(ev)=>{ if(AI.undoEntry(res.entry)){ ev.target.disabled=true; ev.target.textContent='取り消しました'; } else toast('この操作より後に別の編集があるため、「元に戻す」から順に取り消してください','err'); }, text:'この変更を元に戻す'}));
   (res.run.proposals||[]).forEach(p=>actions.append(proposalCard(p, block)));
   if(res.run.finalInfo && res.run.finalInfo.overCap) actions.append(h('div', {class:'ai-note', text:`操作が${res.run.finalInfo.overCap.total}件あり、上限(${res.run.finalInfo.overCap.cap}件)を超えたため、提案を作りませんでした。依頼を小さく分けてください。`}));
