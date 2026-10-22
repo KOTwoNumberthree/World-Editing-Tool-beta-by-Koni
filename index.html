@@ -3330,7 +3330,8 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
 
   // --- 未設定の背景 + 地形 ---
   ctx.save(); rasterT();
-  ctx.fillStyle='#141a22'; ctx.fillRect(0,0,w.mapWidth,w.mapHeight);
+  const sty=(opts&&opts.std)?'standard':styleOf(w);   /* 3D地球儀のテクスチャは標準のまま(opts.std) */
+  ctx.fillStyle=STYLE_BG[sty]||'#141a22'; ctx.fillRect(0,0,w.mapWidth,w.mapHeight);
   ctx.beginPath(); ctx.rect(0,0,w.mapWidth,w.mapHeight); ctx.clip();
   ctx.imageSmoothingEnabled = smooth;
   const elt=elevLt(w);
@@ -3338,7 +3339,7 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
   if(AL.terrain){
     for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
       const k=tkey(tx,ty), t=R.layers.terrain.get(k); if(!t) continue;
-      ctx.drawImage(bakeTerrain(t, R.layers.elev.get(k)||null, lod, emode, elt, {x:tx,y:ty}), tx*TS, ty*TS, TS+ovX, TS+ovY);
+      ctx.drawImage(bakeTerrainStyled(t, R.layers.elev.get(k)||null, lod, emode, elt, {x:tx,y:ty,nb:(dx,dy)=>R.layers.terrain.get(tkey(tx+dx,ty+dy))}, sty, w), tx*TS, ty*TS, TS+ovX, TS+ovY);
     }
   } else if(emode!=='off'){
     for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
@@ -8063,10 +8064,118 @@ function openGeo3DSettingsModal(){
 }
 
 /* ---------- テクスチャ生成(2D → 球体用画像) ---------- */
+/* =========================================================
+   v36: 地図の表示スタイル(標準/古地図風/現代風/デジタル風/衛星風/単色)
+   ・表示だけを変える。地形タイプの色・タイルの値・標高は一切変えない(描画時に画素ごとに計算するだけ)
+   ・海 = isOcean が「はい」の地形タイプ / 湖 = 地形タイプ「湖」(id 'lake' または名前が「湖」) / 陸 = それ以外
+   ・設定は w.mapDisplay に保存: style / mono{land,sea,lake} / satSeed(衛星風の模様の種)
+   ・模様の座標は世界座標(タイルの境目でずれない)。隣のタイルも参照するので輪郭・なめらかさもタイルの境目でずれない
+   ========================================================= */
+const MAP_STYLES=[['standard','標準'],['parchment','古地図風'],['modern','現代風'],['digital','デジタル風'],['satellite','衛星風'],['mono','単色(陸・海・湖)']];
+const STYLE_BG={standard:'#141a22', parchment:'#e9dcb8', modern:'#f6f6f2', digital:'#0a1019', satellite:'#141a22', mono:'#141a22'};
+const MONO_DEFAULT={land:'#d9d0ae', sea:'#35648f', lake:'#6fb0cf'};
+const MONO_KINDS=[['land','陸'],['sea','海'],['lake','湖']];
+const HEX6=/^#[0-9a-f]{6}$/i;
+function styleOf(w){ w=w||W(); const d=(w&&w.mapDisplay)||{}; return MAP_STYLES.some(s=>s[0]===d.style)?d.style:'standard'; }
+function monoOf(w){ w=w||W(); const m=(w&&w.mapDisplay&&w.mapDisplay.mono)||{}; const o={}; MONO_KINDS.forEach(([k])=>{ o[k]=(typeof m[k]==='string'&&HEX6.test(m[k]))?m[k].toLowerCase():''; }); return o; }
+function satSeedDefault(w){ const s=String((w&&(w.id||w.name))||'atlas'); let h=2166136261; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return (h>>>0)%1000000; }
+function satSeedOf(w){ w=w||W(); const v=w&&w.mapDisplay&&w.mapDisplay.satSeed; return (Number.isInteger(v)&&v>=0&&v<=999999999)?v:satSeedDefault(w); }
+/* 地形タイプごとの種別: 0=陸 1=海 2=湖 */
+const SPal={sig:'',ver:0,kind:new Uint8Array(256),lutP:new Uint8Array(768),lutM:new Uint8Array(768),lutD:new Uint8Array(768),lutS:new Uint8Array(768)};
+function stylePal(w){
+  const T=Pal.terrain; const sig=w.terrainTypes.map(t=>t.rid+':'+t.id+':'+t.color+':'+t.name+':'+(t.isOcean?1:0)).join('|')+'#'+T.ver;
+  if(sig===SPal.sig) return SPal;
+  SPal.sig=sig; SPal.ver++; SPal.kind.fill(0);
+  const lum=(r,g,b)=>0.3*r+0.59*g+0.11*b, cl=(x)=>x<0?0:x>255?255:x;
+  const SAT={0:[88,112,62],1:[18,52,84],2:[34,64,38],3:[176,150,102],4:[232,238,242],5:[110,100,88],6:[62,92,78]}, LAKE=[30,80,96];
+  const DIG={1:[22,64,106],0:[60,140,92],6:[60,140,92],2:[30,96,62],3:[186,160,88],4:[150,160,172],5:[150,160,172]};
+  w.terrainTypes.forEach(t=>{ if(t.rid>255||t.rid<1) return;
+    const lake=(t.id==='lake'||t.name==='湖'); SPal.kind[t.rid]=lake?2:(t.isOcean?1:0);
+    const i=t.rid*3, r=T.lut[i], g=T.lut[i+1], b=T.lut[i+2], c=T.cat[t.rid], gy=lum(r,g,b);
+    /* 古地図風: 彩度を落とし、セピアに寄せ、羊皮紙の色を混ぜる */
+    let pr=gy+(r-gy)*0.45, pg=gy+(g-gy)*0.45, pb=gy+(b-gy)*0.45; pr*=1.0; pg*=0.94; pb*=0.80; pr=pr*0.75+232*0.25; pg=pg*0.75+220*0.25; pb=pb*0.75+184*0.25;
+    if(SPal.kind[t.rid]!==0){ pr=pr*0.6+168*0.4; pg=pg*0.6+188*0.4; pb=pb*0.6+184*0.4; }   /* 古地図の海は、明るい青灰色 */
+    SPal.lutP[i]=cl(pr); SPal.lutP[i+1]=cl(pg); SPal.lutP[i+2]=cl(pb);
+    /* 現代風: 彩度を上げる(平らな色) */
+    let mr=gy+(r-gy)*1.3+6, mg=gy+(g-gy)*1.3+6, mb=gy+(b-gy)*1.3+6; SPal.lutM[i]=cl(mr); SPal.lutM[i+1]=cl(mg); SPal.lutM[i+2]=cl(mb);
+    /* デジタル風: 5色にまとめる */
+    const dc=DIG[c]||DIG[0]; SPal.lutD[i]=dc[0]; SPal.lutD[i+1]=dc[1]; SPal.lutD[i+2]=dc[2];
+    /* 衛星風: 種類ごとの基調色 + 登録した色を35%混ぜる */
+    const sc=(lake?LAKE:(SAT[c]||SAT[0])); SPal.lutS[i]=sc[0]*0.65+r*0.35; SPal.lutS[i+1]=sc[1]*0.65+g*0.35; SPal.lutS[i+2]=sc[2]*0.65+b*0.35;
+  });
+  return SPal;
+}
+const _arrIds=new WeakMap(); let _arrSeq=0;
+function arrId(a){ if(!a) return 0; let v=_arrIds.get(a); if(!v){ v=++_arrSeq; _arrIds.set(a,v); } return v; }
+function h2(x,y,s){ let h=(Math.imul(x|0,374761393)+Math.imul(y|0,668265263)+Math.imul(s|0,2246822519))|0; h=Math.imul(h^(h>>>13),1274126177); h^=h>>>16; return (h>>>0)/4294967296; }
+function vnoise(x,y,s){ const ix=Math.floor(x), iy=Math.floor(y); let fx=x-ix, fy=y-iy; fx=fx*fx*(3-2*fx); fy=fy*fy*(3-2*fy);
+  const a=h2(ix,iy,s), b=h2(ix+1,iy,s), c=h2(ix,iy+1,s), d=h2(ix+1,iy+1,s); return (a+(b-a)*fx)+((c+(d-c)*fx)-(a+(b-a)*fx))*fy; }
+function fbm(X,Y,s){ return 0.55*vnoise(X/40,Y/40,s)+0.30*vnoise(X/14,Y/14,s+1)+0.15*vnoise(X/5,Y/5,s+2); }
+Bake.styled=new WeakMap();
+const STYLE_NEEDS_NB={parchment:1,modern:1,satellite:1};
+function bakeTerrainStyled(tile, elevTile, lod, emode, lt, org, style, w){
+  if(!style||style==='standard') return bakeTerrain(tile, elevTile, lod, emode, lt, org);
+  w=w||W(); const P=Pal.terrain, SP=stylePal(w); emode=emode||'shade'; if(emode==='off'||style==='digital'||style==='mono') elevTile=null;
+  const mono=style==='mono'?monoOf(w):null, seed=style==='satellite'?satSeedOf(w):0;
+  const T9=[]; let nbSig=''; for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ const a=(dx===0&&dy===0)?tile:((STYLE_NEEDS_NB[style]&&org&&org.nb)?(org.nb(dx,dy)||null):null); T9.push(a); if(STYLE_NEEDS_NB[style]&&!(dx===0&&dy===0)) nbSig+=arrId(a)+','; }
+  const key=[style,mono?(mono.land+mono.sea+mono.lake):'',seed,SP.ver,P.ver,emode,ltKey(lt),arrId(elevTile),nbSig].join('|');
+  let e=Bake.styled.get(tile); if(!e||e.key!==key){ e={key,lods:{}}; Bake.styled.set(tile,e); }
+  const ck=lod+'@'+org.x+','+org.y; if(e.lods[ck]) return e.lods[ck];
+  const shadeFn=elevShadeFn(lt), ox=org.x*TS, oy=org.y*TS, s=1<<lod, n=TS>>lod, c=newTileCanvas(n), ctx=c.getContext('2d'), img=ctx.createImageData(n,n), d=img.data;
+  const kind=SP.kind, cat=P.cat, has=P.has, lut=P.lut;
+  const at=(X,Y)=>{ let cx=1,cy=1; if(X<0){cx=0;X+=256;} else if(X>=256){cx=2;X-=256;} if(Y<0){cy=0;Y+=256;} else if(Y>=256){cy=2;Y-=256;} const tt=T9[cy*3+cx]; return tt?tt[(Y<<8)|X]:0; };
+  const monoLut=new Uint8Array(768); if(mono){ MONO_KINDS.forEach(([k],ki)=>{}); for(let rid=1;rid<256;rid++){ if(!has[rid]) continue; const kk=kind[rid], key2=kk===1?'sea':kk===2?'lake':'land', hx=mono[key2]; if(hx){ const [r,g,b]=hexToRgb(hx); monoLut[rid*3]=r; monoLut[rid*3+1]=g; monoLut[rid*3+2]=b; } else { monoLut[rid*3]=lut[rid*3]; monoLut[rid*3+1]=lut[rid*3+1]; monoLut[rid*3+2]=lut[rid*3+2]; } } }
+  const INK=[70,48,30];
+  for(let py=0;py<n;py++){ const y=py*s;
+    for(let px=0;px<n;px++){
+      const x=px*s, idx=(y<<8)|x, v=tile[idx], o=(py*n+px)*4;
+      if(!v||!has[v]) continue;
+      const X=ox+x, Y=oy+y, k=kind[v], cv=cat[v]; let r,g,b;
+      if(style==='mono'){ r=monoLut[v*3]; g=monoLut[v*3+1]; b=monoLut[v*3+2]; }
+      else if(style==='digital'){
+        r=SP.lutD[v*3]; g=SP.lutD[v*3+1]; b=SP.lutD[v*3+2];
+        if(lod<=3 && (((X&31)===0)||((Y&31)===0))){ r=r*0.88+120*0.12; g=g*0.88+170*0.12; b=b*0.88+220*0.12; }
+      }
+      else if(style==='satellite'){
+        const dd=s>2?s:2; let sr=0,sg=0,sb=0,cnt=0;
+        for(let j=-1;j<=1;j++) for(let i=-1;i<=1;i++){ let u=(i===0&&j===0)?v:at(x+i*dd,y+j*dd); if(!u||!has[u]) u=v; sr+=SP.lutS[u*3]; sg+=SP.lutS[u*3+1]; sb+=SP.lutS[u*3+2]; cnt++; }
+        r=sr/cnt; g=sg/cnt; b=sb/cnt;
+        const wat=(k!==0)?0.6:1, nz=(fbm(X,Y,seed)-0.5)*0.9*wat, grain=(h2(X,Y,seed+7)-0.5)*(cv===2?0.10:0.06);   /* 明暗: 約±10%(水は6割)、粒状: ±3〜5% */
+        const f=1+nz+grain; r*=f; g*=f; b*=f;
+        if(elevTile){ const el=elevTile[idx];
+          if(el){ const eL=elevTile[x>=s?idx-s:idx], eU=elevTile[y>=s?idx-(s<<8):idx];
+            if(emode==='bands'){ if(!k){ const bc=elevBandColor(el); r=r*0.55+bc[0]*0.45; g=g*0.55+bc[1]*0.45; b=b*0.55+bc[2]*0.45; } }
+            else { let sh=shadeFn(el-eL,el-eU); sh=sh<-45?-45:sh>45?45:sh; const lift=el*0.10; r+=sh+lift; g+=sh+lift; b+=sh+lift*0.8; } } }
+      }
+      else {   /* parchment / modern */
+        const par=style==='parchment'; const L=par?SP.lutP:SP.lutM; r=L[v*3]; g=L[v*3+1]; b=L[v*3+2];
+        if(elevTile){ const el=elevTile[idx];
+          if(el){ const eL=elevTile[x>=s?idx-s:idx], eU=elevTile[y>=s?idx-(s<<8):idx];
+            if(emode==='bands'){ if(!k){ const bc=elevBandColor(el); r=r*0.5+bc[0]*0.5; g=g*0.5+bc[1]*0.5; b=b*0.5+bc[2]*0.5; } }
+            else { let sh=shadeFn(el-eL,el-eU); sh=sh<-45?-45:sh>45?45:sh; sh*=par?0.5:0.7; const lift=el*0.05; r+=sh+lift; g+=sh+lift; b+=sh+lift*0.8; } } }
+        const nL=at(x-s,y), nU=at(x,y-s);
+        if(par){
+          const nR=at(x+s,y), nD=at(x,y+s); let a=0;
+          if(k===0){ const kk=(q)=>(q&&has[q])?kind[q]:0; if(kk(nL)||kk(nR)||kk(nU)||kk(nD)) a=0.85; else if((nL&&nL!==v)||(nU&&nU!==v)) a=0.35; }
+          if(a>0){ r=r*(1-a)+INK[0]*a; g=g*(1-a)+INK[1]*a; b=b*(1-a)+INK[2]*a; }
+          else if(lod<2){
+            if(cv===5){ const hh=h2(X>>3,Y>>3,11); if(hh>0.18 && ((X+2*Y+((hh*4)|0))&7)<1){ r=r*0.5+INK[0]*0.5; g=g*0.5+INK[1]*0.5; b=b*0.5+INK[2]*0.5; } }
+            else if(cv===2){ const cx=X%6, cy=Y%6, hh=h2((X/6)|0,(Y/6)|0,23); if(hh>0.45 && cx===((hh*6)|0) && cy>=1 && cy<=3){ r=r*0.6+INK[0]*0.4; g=g*0.6+INK[1]*0.4; b=b*0.6+INK[2]*0.4; } }
+            else if(k!==0){ const wv=Math.sin(X*0.30+Math.sin(Y*0.45)*2.0+Y*0.12); if(wv>0.985){ r*=0.95; g*=0.95; b*=0.95; } }
+          }
+        } else {
+          if((nL&&has[nL]&&nL!==v)||(nU&&has[nU]&&nU!==v)){ r*=0.74; g*=0.74; b*=0.74; }
+        }
+      }
+      d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0); e.lods[ck]=c; return c;
+}
 async function buildMapTextureCanvas(targetW){
   const w=W(); const targetH=Math.max(2,Math.round(targetW*w.mapHeight/w.mapWidth));
   const cv=document.createElement('canvas'); cv.width=targetW; cv.height=targetH;
-  renderBase(cv.getContext('2d'), targetW, targetH, {scale:targetW/w.extentW, offX:0, offY:0, fitScale:MapView.fitScale, activeLayers:MapView.activeLayers}, {own:true});
+  renderBase(cv.getContext('2d'), targetW, targetH, {scale:targetW/w.extentW, offX:0, offY:0, fitScale:MapView.fitScale, activeLayers:MapView.activeLayers}, {own:true, std:true});   /* 3D地球儀は表示スタイルの対象外(標準) */
   return cv;
 }
 /* 2Dマップ(元の投影方式のまま)を、3D球体に貼り付けるための正距円筒(緯度経度に線形対応)テクスチャへ
@@ -12760,7 +12869,8 @@ function mapDisp(w){
   w=w||W(); const d=(w&&w.mapDisplay)||{}; const az=Number(d.lightAz), al=Number(d.lightAlt);
   return {elevation:d.elevation!==false, elevMode:d.elevMode==='bands'?'bands':'shade', texture:d.texture==='on'?'on':'off',   /* 地形の質感(既定: なし=単色) */
     lightAz:Number.isFinite(az)?((az%360)+360)%360:315, lightAlt:Number.isFinite(al)?Math.max(0,Math.min(90,al)):45, lightCustom:d.lightCustom===true,
-    contour:d.contour===true, contourStep:[16,32,64].includes(Number(d.contourStep))?Number(d.contourStep):32};
+    contour:d.contour===true, contourStep:[16,32,64].includes(Number(d.contourStep))?Number(d.contourStep):32,
+    style:styleOf(w), mono:monoOf(w), satSeed:satSeedOf(w)};   /* v36: 表示スタイル(既定は標準) */
 }
 function elevLt(w){ const d=mapDisp(w); return {az:d.lightAz,alt:d.lightAlt,tex:d.texture==='on'}; }
 function elevLightKey(w){ const d=mapDisp(w); return [d.elevation?d.elevMode:'off',d.lightAz,d.lightAlt,d.contour?d.contourStep:0,d.texture].join('|'); }
@@ -12847,6 +12957,7 @@ function elevRowHtml(){
     <div class="lp-row" style="margin-left:22px;"><span>光の高度</span><input type="range" min="0" max="90" step="5" value="${d.lightAlt}" data-elev2="lalt" ${dis}><b data-elev2-v="lalt">${Math.round(d.lightAlt)}°</b></div>
     <div class="lp-row" style="margin-left:22px;"><button class="btn small" data-elev2="lreset" ${dis}>光源を既定に戻す</button></div>
     <div class="lp-note" style="margin-left:22px;">方位は北=0°・東=90°で、光が来る方向です(既定: 北西315°・高度45°)。3D地球儀の光源にも反映されます。</div>
+    ${mapStyleHtml(d)}
     <div class="lp-row"><span>地形の質感</span><select data-tex="1"><option value="off" ${d.texture!=='on'?'selected':''}>なし(単色)</option><option value="on" ${d.texture==='on'?'selected':''}>あり(模様)</option></select></div>
     <div class="lp-note">既定は「なし」で、地形は登録した色の単色で描かれます。「あり」にすると、海の波・森や砂漠などの点・線の模様が付きます(表示だけで、地形のデータは変わりません)。</div>`;
 }
@@ -12855,6 +12966,38 @@ document.addEventListener('change',(ev)=>{
   const apply=()=>{ w.mapDisplay=Object.assign({elevation:true,elevMode:'shade'},w.mapDisplay||{}); w.mapDisplay.texture=(t.value==='on')?'on':'off'; };
   if(w.readOnly) apply(); else if(!mutate('地形の質感の表示設定',apply,'display')){ renderMapLayerPanel(); return; }
   renderMapLayerPanel(); renderMap();
+});
+function mapStyleHtml(d){
+  const w=W(); const ro=!!(w&&w.readOnly)||(typeof roleHasPerm==='function'&&!roleHasPerm('display')); const dis=ro?'disabled':'';
+  const shownMono=(k)=>{ if(d.mono[k]) return d.mono[k]; const code=k==='sea'?1:k==='lake'?2:0; const t=(w.terrainTypes||[]).find(t=>SPal.sig!==undefined&&((t.isOcean&&!(t.id==='lake'||t.name==='湖'))?1:(t.id==='lake'||t.name==='湖')?2:0)===code); return (t&&HEX6.test(t.color))?t.color:MONO_DEFAULT[k]; };
+  let h=`<div class="lp-row"><span>表示スタイル</span><select data-mstyle="style" ${dis}>${MAP_STYLES.map(([id,nm])=>`<option value="${id}" ${d.style===id?'selected':''}>${nm}</option>`).join('')}</select></div>
+    <div class="lp-note">地形の描き方だけを変えます(表示だけで、地形・国家・都市のデータは変わりません)。国境・都市・ラベルは、どのスタイルでも上に重なります。3D地球儀は対象外で、標準の見た目のままです。</div>`;
+  if(d.style==='mono'){
+    h+=MONO_KINDS.map(([k,nm])=>`<div class="lp-row" style="margin-left:22px;"><span>${nm}の色</span><input type="color" data-mstyle="mono-${k}" value="${shownMono(k)}" ${dis}><button class="btn small" data-mstyle="reset-${k}" ${dis}>元の地形の色に戻す</button></div>`).join('')
+      +`<div class="lp-row" style="margin-left:22px;"><button class="btn small" data-mstyle="reset-all" ${dis}>陸・海・湖をまとめて元の地形の色に戻す</button></div>
+    <div class="lp-note" style="margin-left:22px;">陸=海・湖以外 / 海=「海かどうか」が「はい」の地形 / 湖=地形タイプ「湖」。色を選ぶ前の既定は、元の地形の色です。</div>`;
+  }
+  if(d.style==='satellite') h+=`<div class="lp-row" style="margin-left:22px;"><button class="btn small" data-mstyle="seed" ${dis}>模様の種を変える</button><span class="lp-note">種=${d.satSeed}</span></div>`;
+  return h;
+}
+function mapStyleMutate(summary, fn){
+  const w=W(); if(!w) return false; if(w.readOnly) return false;
+  const apply=()=>{ w.mapDisplay=Object.assign({elevation:true,elevMode:'shade'},w.mapDisplay||{}); fn(w.mapDisplay,w); };
+  if(!mutate(summary,apply,'display')){ renderMapLayerPanel(); return false; }
+  renderMapLayerPanel(); renderMap(); return true;
+}
+document.addEventListener('change',(ev)=>{
+  const t=ev.target; if(!t||!t.matches||!t.matches('[data-mstyle]')) return; const kind=t.dataset.mstyle;
+  if(kind==='style'){ const v=MAP_STYLES.some(s=>s[0]===t.value)?t.value:'standard';
+    mapStyleMutate('地図の表示スタイル',(d,w)=>{ d.style=v; if(v==='mono'){ const m=monoOf(w); if(!m.land&&!m.sea&&!m.lake) d.mono=Object.assign({},MONO_DEFAULT); } if(v==='satellite'&&!Number.isInteger(d.satSeed)) d.satSeed=satSeedDefault(w); }); }
+  else if(/^mono-(land|sea|lake)$/.test(kind)){ const k=kind.slice(5), v=String(t.value||'').toLowerCase(); if(!HEX6.test(v)) return;
+    mapStyleMutate('単色表示の色('+({land:'陸',sea:'海',lake:'湖'}[k])+')',(d)=>{ d.mono=Object.assign({land:'',sea:'',lake:''},d.mono||{}); d.mono[k]=v; }); }
+});
+document.addEventListener('click',(ev)=>{
+  const t=ev.target&&ev.target.closest?ev.target.closest('button[data-mstyle]'):null; if(!t||t.disabled) return; const kind=t.dataset.mstyle;
+  if(/^reset-(land|sea|lake|all)$/.test(kind)){ const k=kind.slice(6);
+    mapStyleMutate('単色表示の色を元の地形の色に戻す',(d)=>{ d.mono=Object.assign({land:'',sea:'',lake:''},d.mono||{}); if(k==='all'){ d.mono={land:'',sea:'',lake:''}; } else d.mono[k]=''; }); }
+  else if(kind==='seed'){ mapStyleMutate('衛星風の模様の種を変更',(d,w)=>{ let n; do{ n=Math.floor(Math.random()*1000000); }while(n===satSeedOf(w)); d.satSeed=n; }); }
 });
 document.addEventListener('input',(ev)=>{ const t=ev.target; if(!t||!t.matches||!t.matches('input[type=range][data-elev2]')) return; const v=document.querySelector(`[data-elev2-v="${t.dataset.elev2}"]`); if(v) v.textContent=Math.round(Number(t.value))+'°'; });
 document.addEventListener('change',(ev)=>{
