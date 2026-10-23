@@ -8072,7 +8072,7 @@ function openGeo3DSettingsModal(){
    ・模様の座標は世界座標(タイルの境目でずれない)。隣のタイルも参照するので輪郭・なめらかさもタイルの境目でずれない
    ========================================================= */
 const MAP_STYLES=[['standard','標準'],['parchment','古地図風'],['modern','現代風'],['digital','デジタル風'],['satellite','衛星風'],['mono','単色(陸・海・湖)']];
-const STYLE_BG={standard:'#141a22', parchment:'#e9dcb8', modern:'#f6f6f2', digital:'#0a1019', satellite:'#141a22', mono:'#141a22'};
+const STYLE_BG={standard:'#141a22', parchment:'#e9dcb8', modern:'#eef0f2', digital:'#05070f', satellite:'#141a22', mono:'#141a22'};
 const MONO_DEFAULT={land:'#d9d0ae', sea:'#35648f', lake:'#6fb0cf'};
 const MONO_KINDS=[['land','陸'],['sea','海'],['lake','湖']];
 const HEX6=/^#[0-9a-f]{6}$/i;
@@ -8088,16 +8088,17 @@ function stylePal(w){
   SPal.sig=sig; SPal.ver++; SPal.kind.fill(0);
   const lum=(r,g,b)=>0.3*r+0.59*g+0.11*b, cl=(x)=>x<0?0:x>255?255:x;
   const SAT={0:[88,112,62],1:[18,52,84],2:[34,64,38],3:[176,150,102],4:[232,238,242],5:[110,100,88],6:[62,92,78]}, LAKE=[30,80,96];
-  const DIG={1:[22,64,106],0:[60,140,92],6:[60,140,92],2:[30,96,62],3:[186,160,88],4:[150,160,172],5:[150,160,172]};
+  const DIG={1:[4,12,26],0:[8,44,66],6:[8,44,66],2:[6,62,58],3:[64,26,70],4:[30,46,92],5:[30,46,92]};   /* サイバー: 5色(水/平地・湿地/森/砂漠/山・雪) */
+  const GM={0:[243,241,234],1:[168,212,245],2:[184,226,172],3:[243,233,207],4:[251,251,251],5:[222,216,202],6:[205,232,214]}, GMLAKE=[179,219,247];   /* Googleマップ風の、地図アプリの配色 */
   w.terrainTypes.forEach(t=>{ if(t.rid>255||t.rid<1) return;
     const lake=(t.id==='lake'||t.name==='湖'); SPal.kind[t.rid]=lake?2:(t.isOcean?1:0);
     const i=t.rid*3, r=T.lut[i], g=T.lut[i+1], b=T.lut[i+2], c=T.cat[t.rid], gy=lum(r,g,b);
     /* 古地図風: 彩度を落とし、セピアに寄せ、羊皮紙の色を混ぜる */
     let pr=gy+(r-gy)*0.45, pg=gy+(g-gy)*0.45, pb=gy+(b-gy)*0.45; pr*=1.0; pg*=0.94; pb*=0.80; pr=pr*0.75+232*0.25; pg=pg*0.75+220*0.25; pb=pb*0.75+184*0.25;
-    if(SPal.kind[t.rid]!==0){ pr=pr*0.6+168*0.4; pg=pg*0.6+188*0.4; pb=pb*0.6+184*0.4; }   /* 古地図の海は、明るい青灰色 */
+    if(SPal.kind[t.rid]!==0){ pr=pr*0.2+196*0.8; pg=pg*0.2+212*0.8; pb=pb*0.2+204*0.8; }   /* 古地図の海は、明るい青灰色 */
     SPal.lutP[i]=cl(pr); SPal.lutP[i+1]=cl(pg); SPal.lutP[i+2]=cl(pb);
     /* 現代風: 彩度を上げる(平らな色) */
-    let mr=gy+(r-gy)*1.3+6, mg=gy+(g-gy)*1.3+6, mb=gy+(b-gy)*1.3+6; SPal.lutM[i]=cl(mr); SPal.lutM[i+1]=cl(mg); SPal.lutM[i+2]=cl(mb);
+    const gm=(lake?GMLAKE:(GM[c]||GM[0])); SPal.lutM[i]=gm[0]; SPal.lutM[i+1]=gm[1]; SPal.lutM[i+2]=gm[2];
     /* デジタル風: 5色にまとめる */
     const dc=DIG[c]||DIG[0]; SPal.lutD[i]=dc[0]; SPal.lutD[i+1]=dc[1]; SPal.lutD[i+2]=dc[2];
     /* 衛星風: 種類ごとの基調色 + 登録した色を35%混ぜる */
@@ -8112,7 +8113,8 @@ function vnoise(x,y,s){ const ix=Math.floor(x), iy=Math.floor(y); let fx=x-ix, f
   const a=h2(ix,iy,s), b=h2(ix+1,iy,s), c=h2(ix,iy+1,s), d=h2(ix+1,iy+1,s); return (a+(b-a)*fx)+((c+(d-c)*fx)-(a+(b-a)*fx))*fy; }
 function fbm(X,Y,s){ return 0.55*vnoise(X/40,Y/40,s)+0.30*vnoise(X/14,Y/14,s+1)+0.15*vnoise(X/5,Y/5,s+2); }
 Bake.styled=new WeakMap();
-const STYLE_NEEDS_NB={parchment:1,modern:1,satellite:1};
+const STYLE_NEEDS_NB={parchment:1,modern:1,satellite:1,digital:1};
+const DIGKEY={0:'p',6:'p',1:'w',2:'f',3:'d',4:'m',5:'m'};
 function bakeTerrainStyled(tile, elevTile, lod, emode, lt, org, style, w){
   if(!style||style==='standard') return bakeTerrain(tile, elevTile, lod, emode, lt, org);
   w=w||W(); const P=Pal.terrain, SP=stylePal(w); emode=emode||'shade'; if(emode==='off'||style==='digital'||style==='mono') elevTile=null;
@@ -8125,16 +8127,41 @@ function bakeTerrainStyled(tile, elevTile, lod, emode, lt, org, style, w){
   const kind=SP.kind, cat=P.cat, has=P.has, lut=P.lut;
   const at=(X,Y)=>{ let cx=1,cy=1; if(X<0){cx=0;X+=256;} else if(X>=256){cx=2;X-=256;} if(Y<0){cy=0;Y+=256;} else if(Y>=256){cy=2;Y-=256;} const tt=T9[cy*3+cx]; return tt?tt[(Y<<8)|X]:0; };
   const monoLut=new Uint8Array(768); if(mono){ MONO_KINDS.forEach(([k],ki)=>{}); for(let rid=1;rid<256;rid++){ if(!has[rid]) continue; const kk=kind[rid], key2=kk===1?'sea':kk===2?'lake':'land', hx=mono[key2]; if(hx){ const [r,g,b]=hexToRgb(hx); monoLut[rid*3]=r; monoLut[rid*3+1]=g; monoLut[rid*3+2]=b; } else { monoLut[rid*3]=lut[rid*3]; monoLut[rid*3+1]=lut[rid*3+1]; monoLut[rid*3+2]=lut[rid*3+2]; } } }
-  const INK=[70,48,30];
+  const INK=[70,48,30], W_=w.mapWidth, H_=w.mapHeight, vig=Math.max(8,Math.min(W_,H_)*0.05), PS=31337;
+  /* 古紙: 大きなしみ・中くらいのまだら・縦横の繊維・粒・ときどき茶色の斑点・ふちの焼け(すべて世界座標) */
+  const paperTone=(X,Y)=>{ const s1=vnoise(X/110,Y/110,PS), s2=vnoise(X/23,Y/23,PS+1), fv=vnoise(X/2.2,Y/38,PS+2), fh=vnoise(X/38,Y/2.2,PS+3), gr=h2(X,Y,PS+4);
+    let f=1+(s1-0.5)*0.22+(s2-0.5)*0.13+(fv+fh-1)*0.08+(gr-0.5)*0.05; let fr=f, fg=f, fb=f;
+    if(h2((X/3)|0,(Y/3)|0,PS+9)>0.9975){ fr*=0.80; fg*=0.78; fb*=0.74; }   /* 茶色の斑点(古紙のしみ) */
+    const ed=Math.min(X,Y,W_-1-X,H_-1-Y); if(ed<vig){ const t=1-ed/vig; const burn=Math.max(0,t*t*(0.30+0.5*(vnoise(X/9,Y/9,PS+5)-0.5))); fr*=1-burn*0.40; fg*=1-burn*0.65; fb*=1-burn*0.95; }
+    return [fr,fg,fb]; };
+  /* サイバー: 細い格子(32ごと=シアン)、太い格子(128ごと=マゼンタ) */
+  const digGrid=(X,Y,lod)=>{ if(lod>3) return null; if(((X&127)===0)||((Y&127)===0)) return [255,60,200,0.30]; if(((X&31)===0)||((Y&31)===0)) return [0,200,255,0.14]; return null; };
   for(let py=0;py<n;py++){ const y=py*s;
     for(let px=0;px<n;px++){
       const x=px*s, idx=(y<<8)|x, v=tile[idx], o=(py*n+px)*4;
-      if(!v||!has[v]) continue;
-      const X=ox+x, Y=oy+y, k=kind[v], cv=cat[v]; let r,g,b;
+      const X=ox+x, Y=oy+y;
+      if(!v||!has[v]){
+        if(X>=W_||Y>=H_) continue;
+        if(style==='parchment'){ let r=233,g=220,b=184; const o2=paperTone(X,Y); r*=o2[0]; g*=o2[1]; b*=o2[2]; d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255; }
+        else if(style==='digital'){ let r=5,g=7,b=15; const gc=digGrid(X,Y,lod); if(gc){ r=r*(1-gc[3])+gc[0]*gc[3]; g=g*(1-gc[3])+gc[1]*gc[3]; b=b*(1-gc[3])+gc[2]*gc[3]; } d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255; }
+        continue;
+      }
+      const k=kind[v], cv=cat[v]; let r,g,b;
       if(style==='mono'){ r=monoLut[v*3]; g=monoLut[v*3+1]; b=monoLut[v*3+2]; }
       else if(style==='digital'){
         r=SP.lutD[v*3]; g=SP.lutD[v*3+1]; b=SP.lutD[v*3+2];
-        if(lod<=3 && (((X&31)===0)||((Y&31)===0))){ r=r*0.88+120*0.12; g=g*0.88+170*0.12; b=b*0.88+220*0.12; }
+        if(lod<=2){
+          const isW=(q)=>q&&has[q]&&kind[q]!==0, isL=(q)=>q&&has[q]&&kind[q]===0; let a=0, cr=0, cg=235, cb=255;
+          if(k===0){
+            if(isW(at(x-s,y))||isW(at(x+s,y))||isW(at(x,y-s))||isW(at(x,y+s))) a=0.92;
+            else { const m=(dd)=>isW(at(x-dd*s,y))||isW(at(x+dd*s,y))||isW(at(x,y-dd*s))||isW(at(x,y+dd*s)); if(m(2)) a=0.38; else if(m(3)) a=0.16; }
+            if(a===0){ const nL=at(x-s,y), nU=at(x,y-s); if((nL&&has[nL]&&nL!==v&&kind[nL]===0&&DIGKEY[cat[nL]]!==DIGKEY[cv])||(nU&&has[nU]&&nU!==v&&kind[nU]===0&&DIGKEY[cat[nU]]!==DIGKEY[cv])){ a=0.4; cr=255; cg=60; cb=200; } }
+          } else {
+            const m=(dd)=>isL(at(x-dd*s,y))||isL(at(x+dd*s,y))||isL(at(x,y-dd*s))||isL(at(x,y+dd*s)); if(m(1)) a=0.55; else if(m(2)) a=0.30; else if(m(3)) a=0.14;
+          }
+          if(a>0){ r=r*(1-a)+cr*a; g=g*(1-a)+cg*a; b=b*(1-a)+cb*a; }
+        }
+        const gc=digGrid(X,Y,lod); if(gc){ r=r*(1-gc[3])+gc[0]*gc[3]; g=g*(1-gc[3])+gc[1]*gc[3]; b=b*(1-gc[3])+gc[2]*gc[3]; }
       }
       else if(style==='satellite'){
         const dd=s>2?s:2; let sr=0,sg=0,sb=0,cnt=0;
@@ -8154,17 +8181,27 @@ function bakeTerrainStyled(tile, elevTile, lod, emode, lt, org, style, w){
             if(emode==='bands'){ if(!k){ const bc=elevBandColor(el); r=r*0.5+bc[0]*0.5; g=g*0.5+bc[1]*0.5; b=b*0.5+bc[2]*0.5; } }
             else { let sh=shadeFn(el-eL,el-eU); sh=sh<-45?-45:sh>45?45:sh; sh*=par?0.5:0.7; const lift=el*0.05; r+=sh+lift; g+=sh+lift; b+=sh+lift*0.8; } } }
         const nL=at(x-s,y), nU=at(x,y-s);
+        const landQ=(q)=>q&&has[q]&&kind[q]===0, watQ=(q)=>q&&has[q]&&kind[q]!==0;
         if(par){
           const nR=at(x+s,y), nD=at(x,y+s); let a=0;
-          if(k===0){ const kk=(q)=>(q&&has[q])?kind[q]:0; if(kk(nL)||kk(nR)||kk(nU)||kk(nD)) a=0.85; else if((nL&&nL!==v)||(nU&&nU!==v)) a=0.35; }
+          if(k===0){ if(watQ(nL)||watQ(nR)||watQ(nU)||watQ(nD)) a=0.88*(0.78+0.22*h2(X,Y,3)); else if((nL&&nL!==v)||(nU&&nU!==v)) a=0.32; }
           if(a>0){ r=r*(1-a)+INK[0]*a; g=g*(1-a)+INK[1]*a; b=b*(1-a)+INK[2]*a; }
           else if(lod<2){
-            if(cv===5){ const hh=h2(X>>3,Y>>3,11); if(hh>0.18 && ((X+2*Y+((hh*4)|0))&7)<1){ r=r*0.5+INK[0]*0.5; g=g*0.5+INK[1]*0.5; b=b*0.5+INK[2]*0.5; } }
-            else if(cv===2){ const cx=X%6, cy=Y%6, hh=h2((X/6)|0,(Y/6)|0,23); if(hh>0.45 && cx===((hh*6)|0) && cy>=1 && cy<=3){ r=r*0.6+INK[0]*0.4; g=g*0.6+INK[1]*0.4; b=b*0.6+INK[2]*0.4; } }
-            else if(k!==0){ const wv=Math.sin(X*0.30+Math.sin(Y*0.45)*2.0+Y*0.12); if(wv>0.985){ r*=0.95; g*=0.95; b*=0.95; } }
+            if(cv===5){ const hh=h2(X>>3,Y>>3,11); if(hh>0.18 && ((X+2*Y+((hh*4)|0))&7)<1){ r=r*0.4+INK[0]*0.6; g=g*0.4+INK[1]*0.6; b=b*0.4+INK[2]*0.6; } }
+            else if(cv===2){ const cx=X%6, cy=Y%6, hh=h2((X/6)|0,(Y/6)|0,23); if(hh>0.4 && cx===((hh*6)|0) && cy>=1 && cy<=3){ r=r*0.5+INK[0]*0.5; g=g*0.5+INK[1]*0.5; b=b*0.5+INK[2]*0.5; } }
+            else if(k!==0){
+              /* 海岸に沿った、インクの線(古地図の「水まわし」): 海岸のすぐ外側が濃く、少し離れた所に細い線が2本 */
+              const jj=1+((h2(X>>2,Y>>2,5)*2)|0); const near=(dd)=>landQ(at(x-dd*s,y))||landQ(at(x+dd*s,y))||landQ(at(x,y-dd*s))||landQ(at(x,y+dd*s));
+              let a2=0; if(near(1)||(jj>1&&near(2))) a2=0.30; else if(near(4)) a2=0.15; else if(near(8)) a2=0.08;
+              if(a2>0){ r=r*(1-a2)+INK[0]*a2; g=g*(1-a2)+INK[1]*a2; b=b*(1-a2)+INK[2]*a2; }
+              else { const wv=Math.sin(X*0.30+Math.sin(Y*0.45)*2.0+Y*0.12); if(wv>0.985){ r*=0.95; g*=0.95; b*=0.95; } }
+            }
           }
+          const pt=paperTone(X,Y); r*=pt[0]; g*=pt[1]; b*=pt[2];   /* 紙の質感を、地形の色にも重ねる(絵の具が紙に染みた感じ) */
         } else {
-          if((nL&&has[nL]&&nL!==v)||(nU&&has[nU]&&nU!==v)){ r*=0.74; g*=0.74; b*=0.74; }
+          /* Googleマップ風: 水辺の細い縁(少し濃い青)と、地形の境目のごく薄い線 */
+          if(k!==0){ if(landQ(nL)||landQ(nU)||landQ(at(x+s,y))||landQ(at(x,y+s))){ r=r*0.86+120*0.14; g=g*0.86+170*0.14; b=b*0.86+215*0.14; } }
+          else if((nL&&has[nL]&&nL!==v&&kind[nL]===0)||(nU&&has[nU]&&nU!==v&&kind[nU]===0)){ r*=0.93; g*=0.93; b*=0.93; }
         }
       }
       d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=255;
@@ -9249,7 +9286,10 @@ function tutLoadProgress(){ try{ return JSON.parse(localStorage.getItem(TUT_PROG
 function tutSaveProgress(p){ try{ localStorage.setItem(TUT_PROGRESS_KEY, JSON.stringify(p)); }catch(e){} }
 function tutCategoryStatus(catId){ return tutLoadProgress()[catId] || 'notstarted'; }
 function tutSetCategoryStatus(catId, status){ const p=tutLoadProgress(); p[catId]=status; tutSaveProgress(p); }
-function tutResetAllProgress(){ tutSaveProgress({}); }
+function tutResetAllProgress(){ tutSaveProgress({}); try{ localStorage.removeItem(TUT_POS_KEY); }catch(e){} }
+const TUT_POS_KEY = 'atlasTutorialStepPos_v1';
+function tutLoadPos(){ try{ return JSON.parse(localStorage.getItem(TUT_POS_KEY))||{}; }catch(e){ return {}; } }
+function tutSavePos(catId, i){ try{ const p=tutLoadPos(); p[catId]=i; localStorage.setItem(TUT_POS_KEY, JSON.stringify(p)); }catch(e){} }
 const TUT_STATUS_LABEL = {notstarted:'未開始', inprogress:'進行中', completed:'完了'};
 
 function tutById(id){ return ()=>document.getElementById(id); }
@@ -9268,7 +9308,7 @@ function buildTutorialCategories(){
         { title:'元に戻す / やり直す', desc:'地図やデータの編集操作は、この2つのボタン(Ctrl+Z / Ctrl+Y)でいつでも取り消し・やり直しができます。', target:tutById('undoBtn') },
         { title:'検索', desc:'国家・地域・都市・人物・組織・戦争・条約・出来事などを横断的に検索できます(ショートカット: Ctrl+K)。', target:tutById('searchBtn') },
         { title:'ファイル(JSONインポート/エクスポート)', desc:'「ファイル」メニューから、世界データ全体をJSONファイルとして書き出したり、JSONファイルから読み込んだりできます。地図タイル・国家・年表などすべてのデータが1つのファイルに含まれ、バックアップや他端末への引き継ぎに使えます。', target:tutById('fileMenuBtn'), action:{type:'click', sel:'#fileMenuBtn'}, note:'「ファイル ▾」をクリックして開いてみましょう' },
-        { title:'書き出し / 読み込みメニュー', desc:'ここから世界データ全体のJSON書き出し、統計・国家一覧のCSV書き出し、地図のPNG書き出し、JSONの読み込み、バックアップの作成ができます。閉じるには「閉じる」を押すか、枠の外をクリックしてください。', target:tutByQuery('#modalBox'), expectModalOpen:true },
+        { title:'書き出し / 読み込みメニュー', desc:'ここから世界データ全体のJSON書き出し、統計・国家一覧のCSV書き出し、地図のPNG書き出し、JSONの読み込み、バックアップの作成ができます。世界設定書・閲覧用JSON・保存先への保存・AI提案の読み込みなども、このメニューにあります(後ろの追加カテゴリーで説明します)。閉じるには「閉じる」を押すか、枠の外をクリックしてください。', target:tutByQuery('#modalBox'), expectModalOpen:true },
       ]
     },
     { id:'mapedit', label:'地図編集', icon:'🗺',
@@ -9355,12 +9395,223 @@ function buildTutorialCategories(){
         { title:'アセット管理(資料)', desc:'「資料」画面では、国旗・国章・肖像などの画像素材(アセット)をまとめて管理できます。ここでアップロードした画像は、国家の国旗や参考画像などから選んで使えます。', target:tutByQuery('.navitem[data-view="assets"]'), action:{type:'click', sel:'.navitem[data-view="assets"]'}, note:'「資料」をクリックしてください' },
         { title:'バージョン・バックアップ', desc:'「設定」画面の「バックアップ / 世代管理」から、いつでも手動でバックアップを作成し、あとから復元できます。IndexedDBにタイルデータごと保存されます。', target:tutByQuery('.navitem[data-view="settings"]'), action:{type:'click', sel:'.navitem[data-view="settings"]'}, note:'「設定」をクリックしてください' },
         { title:'UI設定(表示権限)', desc:'設定画面の「表示権限」では、この端末内での簡易的な編集制限(管理者・国家編集者・歴史編集者・地図編集者・閲覧者)を切り替えられます。外部認証ではなく、ロールプレイ用の簡易機能です。', target:tutById('settingsBody') },
-        { title:'これでチュートリアルは完了です', desc:'お疲れさまでした。ここまでで、このツールの主な機能を一通り確認しました。「？」ボタンからはいつでもこのチュートリアルを再開・やり直しできます。練習用のサンプル世界は、このあと保存するか破棄するか選べます。', target:null },
+        { title:'基本のカテゴリーは、ここまでです', desc:'お疲れさまでした。ここまでで、基本の機能を一通り確認しました。続けて、表示と3D・文化・交易・辞書・文書と出力・保存先と共同編集・高度な編集・AIアシスタントのカテゴリーで、追加の機能も確認できます(「次へ」で進みます。ここで終えるには右上の✕)。「？」ボタンからはいつでも再開・やり直しできます。練習用のサンプル世界は、終了のあとに保存するか破棄するか選べます。', target:null },
       ]
     },
-  ];
+  ].concat(tutNewCategories());
 }
 
+/* =========================================================
+   v37: 追加カテゴリー(6)・機能の索引・サンプル世界の追加内容・固定のAI提案
+   ・チュートリアルは、サンプル世界の中だけで動く。利用者の世界・保存先・AIには触れない(外部へ接続しない)
+   ・文中の「」は、画面の文字列(テストで画面と照合する)。『』は、画面の文字列ではない用語
+   ========================================================= */
+const TUT_NEW_CATS=['display3d','cultrade','docsout','storage','advedit','aiassist'];
+const tq=(sel)=>()=>document.querySelector(sel);
+const tqRow=(sel)=>()=>{ const e=document.querySelector(sel); return e?(e.closest('.lp-row')||e):null; };
+const tqText=(root,txt)=>()=>[...document.querySelectorAll(root+' h2,'+root+' h3,'+root+' h4,'+root+' .set-h')].map(e=>e.closest('section,.panel,.set-sec,div')||e).find((e,i)=>/./.test(e.textContent)&&(([...document.querySelectorAll(root+' h2,'+root+' h3,'+root+' h4,'+root+' .set-h')][i]||{}).textContent||'').indexOf(txt)>=0)||null;
+function tutBy(fn){ Tutorial._bypass=true; try{ return fn(); } finally{ Tutorial._bypass=false; } }
+function tutClickText(root,txt){ const b=[...document.querySelectorAll(root)].find(e=>e.children.length===0&&e.textContent.trim()===txt)||[...document.querySelectorAll(root)].find(e=>e.textContent.trim()===txt); if(b) tutBy(()=>b.click()); return !!b; }
+function tutDisp(o){ const w=W(); if(!w||!w._tutorialPractice) return; w.mapDisplay=Object.assign({elevation:true,elevMode:'shade'},w.mapDisplay||{},o); MapView.baseDirty=true; try{ renderMapLayerPanel(); renderMap(); }catch(e){} }
+function tutView(v){ if(currentView!==v) switchView(v); }
+function tutCult(tab){ tutView('culture'); const b=document.querySelector('[data-cult-tab="'+tab+'"]'); if(b) tutBy(()=>b.click()); }
+function tutTrade(tab){ tutView('trade'); const b=document.querySelector('[data-trade-tab="'+tab+'"]'); if(b) tutBy(()=>b.click()); }
+function tutTypo(txt){ tutView('typography'); tutClickText('#view-typography *',txt); }
+function tutCanvasTab(txt){ if(!document.getElementById('modalOverlay').classList.contains('active')||!/キャンバス \/ 解像度/.test(document.getElementById('modalBox').textContent)){ tutView('map'); tutBy(()=>document.getElementById('canvasBtn').click()); } if(txt) tutClickText('#modalBox button, #modalBox [role=tab], #modalBox .tab, #modalBox span, #modalBox div',txt); }
+function tutAI(tab){ const d=document.getElementById('aiDrawer'); if(!d||d.hidden) tutBy(()=>document.getElementById('aiBtn').click()); const t=document.querySelector('.ai-tab[data-tab="'+tab+'"]'); if(t) tutBy(()=>t.click()); }
+function tutCleanupOverlays(step){
+  /* このステップで使わない画面(wiki編集・AIパネル・検索)は閉じる */
+  if(!(step&&step.wiki) && typeof WkUI!=='undefined' && WkUI.open) wkCloseEditor();
+  if(!(step&&step.ai)){ const d=document.getElementById('aiDrawer'); if(d&&!d.hidden) tutBy(()=>document.getElementById('aiBtn').click()); }
+  if(!(step&&step.search)){ const o=document.getElementById('searchOverlay'); if(o&&o.classList.contains('active')) closeSearch(); }
+}
+/* ---- サンプル世界に足す内容(架空の例。チュートリアル用のサンプル世界にだけ入る) ---- */
+function tutEnsureSampleExtras(){
+  const w=W(); if(!w||!w._tutorialPractice||w._tutExtras) return false;
+  const n1=w.nations[0], n2=w.nations[1]; if(!n1||!n2) return false;
+  const add=(arr,o)=>{ if(!arr.some(x=>x.id===o.id)) arr.push(o); };
+  add(w.cities,{id:'tut_city_1',name:'サンプルの都',nationId:n1.id,x:190,y:200,founded:0,ended:'',isCapital:true,kind:'首都',lineIds:[],population:30000,notes:'練習用の架空の都市'});
+  add(w.cities,{id:'tut_city_2',name:'サンプルの港',nationId:n2.id,x:320,y:240,founded:0,ended:'',isCapital:false,kind:'港',lineIds:[],population:12000,notes:'練習用の架空の都市'});
+  add(w.cities,{id:'tut_city_3',name:'サンプルの関所',nationId:n1.id,x:260,y:320,founded:0,ended:'',isCapital:false,kind:'要塞',lineIds:[],population:800,notes:'練習用の架空の都市(提案の例で削除されます)'});
+  add(w.languages,{id:'tut_lang_1',name:'サンプル語',color:'#8fa8d8',from:'',to:'',notes:'練習用の架空の言語',parentId:'',family:'',speakers:''});
+  add(w.tradeRoutes,{id:'tut_trade_1',name:'サンプル交易路',goods:['塩','織物'],from:'',to:'',volume:120,fromCityId:'tut_city_1',toCityId:'tut_city_2',waypoints:[],color:'#e8b04a',notes:'練習用の架空の交易路'});
+  add(w.resources,{id:'tut_res_1',name:'サンプル塩田',kind:'その他',x:240,y:260,from:'',to:'',notes:'練習用の架空の資源'});
+  if(!Array.isArray(w.dictEntries)) w.dictEntries=[];
+  add(w.dictEntries,{id:'tut_dict_1',lang:'tut_lang_1',headword:'ラム',reading:'らむ',pos:'',meanings:[{text:'水',note:''}],translations:[],notes:'練習用の架空の語'});
+  add(w.dictEntries,{id:'tut_dict_2',lang:'tut_lang_1',headword:'ソル',reading:'そる',pos:'',meanings:[{text:'太陽',note:''}],translations:[],notes:'練習用の架空の語'});
+  w._tutExtras=true; try{ normalizeWorld(w); }catch(e){ console.warn(e); } return true;
+}
+{ const _e=tutEnsureSampleNations; tutEnsureSampleNations=function(catId){ let a=_e(catId); if(TUT_NEW_CATS.includes(catId)){ if(tutEnsureSampleNations._noNat) return a; const b=tutEnsureSampleExtras(); a=a||b; } return a; }; }
+/* ---- 固定のAI提案の例(atlas-proposal-v1)。AIは呼ばない。サンプル世界の中で「提案として読み込む」画面を再現する ---- */
+const TUT_SAMPLE_PROPOSAL={format:'atlas-proposal-v1', worldId:'(読み込み時に、サンプル世界のIDが入ります)', baseRevision:0, createdBy:'チュートリアルの固定の例(AIは使っていません)',
+  goal:'サンプル: 新しい国家と都市を作り、関所の都市を整理する(固定の例)',
+  operations:[
+    {op:'create', collection:'nations', id:'ai_tut_nation_1', data:{name:'サンプル連邦', code:'SMF'}, reason:'新しい国家を1つ追加する例'},
+    {op:'create', collection:'cities', id:'ai_tut_city_1', data:{name:'サンプルの新都', x:220, y:180, kind:'都市', nationId:'ai_tut_nation_1'}, reason:'追加した国家に属する都市(国家の承認に依存します)'},
+    {op:'update', collection:'cities', id:'tut_city_2', data:{notes:'交易の中継地として栄えた(提案で変更した説明)'}, reason:'既存の都市の説明を変える例'},
+    {op:'delete', collection:'cities', id:'tut_city_3', reason:'削除は、承認のときに別の確認が出る例'}
+  ]};
+function tutOpenSampleProposal(){ const w=W(); if(!w||!w._tutorialPractice||typeof AtlasProposal==='undefined') return null; const p=JSON.parse(JSON.stringify(TUT_SAMPLE_PROPOSAL)); p.worldId=w.id; p.baseRevision=Number(w.revision)||0; return AtlasProposal.importText(JSON.stringify(p)); }
+/* ---- ステップの形: {title, desc, target, view, beforeShow, expectModalOpen, features:[[機能名,よみ]], note, allow, action} ---- */
+function tutNewCategories(){
+  const F=(n,k)=>[n,k];
+  return [
+  { id:'display3d', label:'表示と3D', icon:'🌐',
+    desc:'地図の表示スタイル・単色の色・地形の質感・標高レイヤー(等高線・光源)・3D地球儀を学びます。どれも表示だけを変えるもので、地形・国家・都市のデータは変わりません。',
+    steps:[
+      { title:'表示スタイル', view:'map', beforeShow:()=>tutDisp({style:'standard'}), target:tqRow('select[data-mstyle="style"]'), features:[F('表示スタイル','ひょうじすたいる')],
+        desc:'左のパネルの「表示スタイル」で、地形の描き方を切り替えます。「標準」「古地図風」「現代風」「デジタル風」「衛星風」「単色(陸・海・湖)」の6つです。国境・都市・ラベルは、どのスタイルでも上に重なります。<b>表示だけが変わり、地形・国家・都市のデータは変わりません</b>。PNG・タイムラプス・世界設定書の地図にも反映されます(3D地球儀は標準のままです)。' },
+      { title:'古地図風・現代風・デジタル風・衛星風', view:'map', beforeShow:()=>tutDisp({style:'satellite'}), target:tqRow('button[data-mstyle="seed"]'), features:[F('衛星風と古地図風','えいせいふうとこちずふう')],
+        desc:'古地図風は羊皮紙の色とインクの線、現代風は平らで鮮やかな色、デジタル風は暗い背景と格子、衛星風は標高と地形の種類から明暗を計算して描きます(外部の画像は使いません)。衛星風では「模様の種を変える」で、別のばらつきの見た目にできます。種は世界の表示設定に保存されます。' },
+      { title:'単色(陸・海・湖)', view:'map', beforeShow:()=>tutDisp({style:'mono',mono:{land:'#d9d0ae',sea:'#35648f',lake:'#6fb0cf'}}), target:tqRow('input[data-mstyle="mono-land"]'), features:[F('単色表示(陸・海・湖の色)','たんしょくひょうじ')],
+        desc:'「単色(陸・海・湖)」を選ぶと、「陸の色」「海の色」「湖の色」を1色ずつ選べます。色を選ぶと、地図がすぐに変わります。『陸』は海・湖以外のすべての地形、『海』は地形タイプの「海かどうか」が「はい」のもの、『湖』は地形タイプ「湖」です。分類は、設定画面の地形タイプに従います。' },
+      { title:'元の地形の色に戻す', view:'map', beforeShow:()=>tutDisp({style:'mono',mono:{land:'#d9d0ae',sea:'#35648f',lake:'#6fb0cf'}}), target:tq('button[data-mstyle="reset-all"]'), features:[F('元の地形の色に戻す','もとのちけいのいろにもどす')],
+        desc:'「元の地形の色に戻す」を陸・海・湖ごとに押すと、その種類だけが地形タイプに登録した色に戻ります。「陸・海・湖をまとめて元の地形の色に戻す」で、3つとも戻ります。選んだ色は、取り消し(元に戻す)でも戻せます。' },
+      { title:'地形の質感', view:'map', beforeShow:()=>tutDisp({style:'standard'}), target:tqRow('select[data-tex]'), features:[F('地形の質感','ちけいのしつかん')],
+        desc:'「地形の質感」の既定は「なし(単色)」で、地形は登録した色の単色で描かれます。「あり(模様)」にすると、海の波・森や砂漠などの点・線の模様が付きます。古地図風・衛星風の模様は、このスタイル専用で、この設定とは別です。' },
+      { title:'標高レイヤー・等高線・光源', view:'map', beforeShow:()=>tutDisp({style:'standard'}), target:tq('#mapLayerPanel'), features:[F('標高レイヤー','ひょうこうれいやー'),F('等高線','とうこうせん'),F('光源','こうげん')],
+        desc:'「標高(陰影)」で、標高データの陰影(または段彩)を地形の上に重ねます。「等高線」は標高の段階ごとに線を引き、「光の方位」「光の高度」で光の当たる向きを変えられます(「光源を既定に戻す」で北西315°・高度45°)。どれも描画だけの設定で、標高データは変わりません。' },
+      { title:'3D地球儀を開く', view:'globe3d', target:tq('#g3dToolbar'), features:[F('3D地球儀','さんでぃーちきゅうぎ')],
+        desc:'「3D地球儀」は、2D地図を球体に貼って立体的に見る画面です。最初に「地理設定」で惑星の大きさや緯度経度の範囲を決め、「3D変換 / 更新」で球体のテクスチャを作ります。回転・ズームで見回せます。表示スタイルは3D地球儀には反映されず、標準の見た目になります(球面への描画は別の作業になるためです)。' },
+      { title:'3D地球儀の標高・光源・等高線', view:'globe3d', target:tq('#g3dElevExag'), features:[F('3D地球儀の標高の切り替え','さんでぃーちきゅうぎのひょうこうのきりかえ'),F('3D地球儀の光源と等高線','さんでぃーちきゅうぎのこうげんととうこうせん')],
+        desc:'「高さ倍率」で、標高の凹凸の強さ(0で平ら)を変えます。地図側の標高(陰影)のオン・オフと、光の方位・高度、等高線の設定は、3D地球儀にも反映されます。2D側の標高データ自体は変わりません。' },
+    ]},
+  { id:'cultrade', label:'文化・交易・辞書', icon:'📜',
+    desc:'言語(系統・語彙・名づくり)・宗教・文化・伝播の記録・交易路・資源・辞書を学びます。サンプル世界に、言語・交易路・辞書の語が入っています。',
+    steps:[
+      { title:'文化画面の構成', view:'culture', beforeShow:()=>tutCult('language'), target:tq('#view-culture [data-cult-tab="language"]'), features:[F('言語(系統の親子関係)','げんご')],
+        desc:'左のナビゲーションの「文化」では、「言語」「宗教」「文化」「名づくり」「伝播」のタブを切り替えて管理します。言語・宗教・文化は、「＋ 言語を追加」などで登録し、「編集」画面の「親」で系統上の親子関係(例: 祖語と子孫の言語)を設定できます。サンプル世界には、言語「サンプル語」が入っています。' },
+      { title:'名づくり(音韻規則・候補・語彙)', view:'culture', beforeShow:()=>tutCult('phon'), target:tq('#ngGen'), features:[F('名づくり(音韻規則と候補の採用)','なづくり'),F('語彙','ごい')],
+        desc:'「名づくり」では、言語ごとの『音韻規則』(使う子音・母音・音節の形など)を「この規則を保存」で登録し、「候補を生成」で人名・地名・語彙の候補を並べます。候補は画面に表示するだけで保存されません。「採用」を押した1件だけが登録されます(一括採用はありません)。自動で作るのは候補だけで、登録は利用者の操作です。' },
+      { title:'宗教', view:'culture', beforeShow:()=>tutCult('religion'), target:tq('#cultAddBtn'), features:[F('宗教','しゅうきょう')],
+        desc:'「宗教」タブでは、「＋ 宗教を追加」で宗教を登録し、系統の親子関係を設定できます。国家・地域・都市への割り当ては、次の「文化」と同じ方法です。' },
+      { title:'文化と期間つきの割り当て', view:'culture', beforeShow:()=>tutCult('culture'), target:tq('#cultLinkBtn'), features:[F('文化(期間つきの割り当て)','ぶんか')],
+        desc:'「文化」タブの「＋ 割り当てを追加」で、国家・地域・都市に、言語・宗教・文化を『期間つき』(いつからいつまで)で割り当てます。現在の年代に有効な割り当てだけが、一覧と分布に出ます。' },
+      { title:'分布レイヤー', view:'map', target:tq('#mapLayerPanel'), features:[F('文化の分布レイヤー','ぶんかのぶんぷれいやー')],
+        desc:'地図の左パネルの「言語分布」「宗教分布」「文化分布」をオンにすると、年代ごとの割り当てが色で表示されます。表示だけで、割り当てのデータは変わりません。' },
+      { title:'文化の伝播の記録', view:'culture', beforeShow:()=>tutCult('spread'), target:tq('#spAddBtn'), features:[F('文化の伝播の記録','ぶんかのでんぱのきろく')],
+        desc:'「伝播」タブの「＋ 伝播を記録」で、言語・宗教・文化が、いつ・どこから・どこへ広がったかを手動で記録します。速さや範囲は計算しません。地図の「伝播」レイヤーをオンにすると、記録の年以降に矢印で表示されます。' },
+      { title:'交易路', view:'trade', beforeShow:()=>tutTrade('routes'), target:tq('#tradeAddBtn'), features:[F('交易路(地図上の描画)','こうえきろ'),F('交易量','こうえきりょう')],
+        desc:'左のナビゲーションの「交易・資源」の「交易路」タブでは、都市間の交易路を、品目・交易量・期間つきで管理します。「＋ 交易路を地図で追加」で、地図上に線を描いて登録します。サンプル世界には、「サンプル交易路」(2都市の間)があります。地図の「交易路」レイヤーで表示されます。' },
+      { title:'経路の提案', view:'trade', beforeShow:()=>tutTrade('routes'), target:tq('#tradeSuggestBtn'), features:[F('交易路の経路の提案','こうえきろのけいろのていあん')],
+        desc:'「経路を提案」は、2つの都市の間の経路の候補を、地形などから計算して画面に表示します。候補は画面にだけ出るもので、あなたが選んで登録するまで、データは変わりません。' },
+      { title:'資源と交易路の削除', view:'trade', beforeShow:()=>tutTrade('resources'), target:tq('#tradeAddBtn'), features:[F('資源','しげん'),F('交易路の削除','こうえきろのさくじょ')],
+        desc:'「資源」タブの「＋ 資源を地図で追加」で、鉱物・農産物などの産地を地図に置きます。交易路や資源を削除するときは、一覧の「編集」から、または地図の「点・交易路の選択と削除」ツールで選んで削除します(確認が出ます)。' },
+      { title:'辞書の見出し語', view:'dictionary', target:tq('#dvAdd'), features:[F('辞書(見出し語)','じしょ')],
+        desc:'左のナビゲーションの「辞書」では、言語ごとの見出し語・意味を手で登録します(自動生成はしません)。「＋ 見出し語」で追加します。サンプル語には、見出し語「ラム」「ソル」が入っています。' },
+      { title:'活用・対訳・検索', view:'dictionary', target:tq('#dictRoot'), features:[F('活用','かつよう'),F('対訳','たいやく'),F('辞書の検索','じしょのけんさく')],
+        desc:'「品詞と活用表」で、品詞と『活用』(語形の変化の表)を決められます。見出し語の編集画面では、別の言語の見出し語を『対訳』として結びつけられ、「逆引き」で、結びつけられた側からも探せます。語の一覧の「並び」で、五十音順と登録順を切り替えられます。' },
+      { title:'辞書の書き出し', view:'dictionary', target:tq('#dvExport'), features:[F('辞書の出力','じしょのしゅつりょく')],
+        desc:'「辞書を書き出す」で、辞書をファイルとして出力できます。形式や内容は、画面の案内で確認してください。サンプル世界の辞書を書き出しても、利用者の世界には影響しません。' },
+    ]},
+  { id:'docsout', label:'文書と出力', icon:'🖨',
+    desc:'世界設定書(HTML・Word)・wiki風出力・PNG・タイムラプス・閲覧用JSONを学びます。ここでは説明だけで、実際にファイルを書き出す必要はありません。',
+    steps:[
+      { title:'出力の入り口(ファイルメニュー)', view:'dashboard', beforeShow:()=>tutBy(()=>openFileMenu()), expectModalOpen:true, target:tq('#modalBox'), features:[F('ファイルメニュー(出力)','ふぁいるめにゅー')],
+        desc:'出力は、右上の「ファイル」メニューにまとまっています。「世界設定書を書き出す(HTML/Word・章を選択)」「閲覧用JSONを書き出す(読み取り専用・共有向け)」「地図をPNGで書き出す」などです。' },
+      { title:'世界設定書(HTML・Word・章の選択)', view:'dashboard', beforeShow:()=>tutBy(()=>openSettingDocModal()), expectModalOpen:true, target:tq('#modalBox'), features:[F('世界設定書(HTML・Word)','せかいせっていしょ'),F('章の選択','しょうのせんたく')],
+        desc:'世界設定書は、選んだ章だけを1つのファイルにまとめます。「出力する章」で章を選び、「並び順」と「形式」(HTMLまたはWord)を決めて「書き出す」を押します。地図の章には、現在の年代の地図画像が、いま選んでいる表示スタイルで入ります。内部ID・APIキー・AIの履歴・バックアップは含まれません。' },
+      { title:'wiki風出力', view:'dashboard', beforeShow:()=>{ tutBy(()=>{ closeModal(); wkOpenEditor(); }); }, wiki:true, target:tq('#wkRoot .wk-bar'), features:[F('wiki風出力','うぃきふうしゅつりょく')],
+        desc:'「形式」で「wiki風」を選ぶと、リンク付きの複数ページの文書として書き出せます。ここは、その編集画面です。「HTMLを書き出す」「Wordを書き出す」で出力します。「世界から一式を作る」は、世界のデータから、ひな形で章とページの一式を作ります(押したときだけ作られます)。' },
+      { title:'ページ・データ参照・テンプレート・テーマ', view:'dashboard', beforeShow:()=>tutBy(()=>{ if(!(typeof WkUI!=='undefined'&&WkUI.open)) wkOpenEditor(); }), wiki:true, target:tq('#wkSide'), features:[F('wikiページ','うぃきぺーじ'),F('データ参照','でーたさんしょう'),F('テンプレート','てんぷれーと'),F('テーマ','てーま')],
+        desc:'左の一覧で「＋章」「＋ページ」を使って、章とページを作ります。ページの本文には、世界のデータ(国家・都市など)を項目名と値の表として差し込む『データ参照』ブロックを入れられます(入れ方は、エディタ内の案内で確認してください)。「テンプレート」はページの初期の構成、「テーマ」は見た目の設定です。' },
+      { title:'PNG(地図全体・全体PNG)', view:'map', target:tq('#mapPngHiBtn'), features:[F('PNG(地図全体・全体PNG)','ぴーえぬじー')],
+        desc:'地図の上のバーの「PNG」は表示中の範囲を、「全体PNG」は地図の全体を、画像として書き出します。画面と同じ表示スタイル・標高・レイヤーの設定で出力されます。' },
+      { title:'タイムラプス(GIF・動画)', view:'map', beforeShow:()=>tutBy(()=>document.getElementById('tlExportBtn').click()), expectModalOpen:true, target:tq('#modalBox'), features:[F('タイムラプス(GIF・動画)','たいむらぷす'),F('画質と解像度','がしつとかいぞうど')],
+        desc:'「出力」を押すと、指定した年代範囲を連続したコマとして書き出す画面が開きます。「出力形式」は「GIFアニメーション」「動画(WebM / 対応環境ではMP4)」「画像連番(ZIP)」から選びます。「解像度(幅px)」を大きくするほど時間とメモリが必要です。GIFの画質は「GIFの画質」で、動画の画質は「動画の画質」で決めます。ここでは書き出し開始まで進まなくて大丈夫です。' },
+      { title:'閲覧用JSON(閲覧専用)', view:'dashboard', beforeShow:()=>tutBy(()=>openFileMenu()), expectModalOpen:true, target:tq('#fmExportView'), features:[F('閲覧用JSON','えつらんようじぇいそん')],
+        desc:'「閲覧用JSONを書き出す(読み取り専用・共有向け)」は、他の人に見せるためのファイルです。読み込むと『閲覧専用』(見るだけで、編集や保存はできない)の世界として開き、表示スタイルなどの表示設定も含まれます。編集履歴・下描き画像・APIキーなどは含まれません。' },
+    ]},
+  { id:'storage', label:'保存先と共同編集', icon:'☁',
+    desc:'保存先(OneDrive・Google)・新しい世界として保存・リンクから開く・最新の取り込み・上書きと置き換え・版と競合・未保存の変更の扱いを学びます。チュートリアルでは、どの保存先にも接続しません。',
+    steps:[
+      { title:'保存先の選択と、接続の設定', view:'settings', target:tqText('#view-settings','OneDrive(Microsoft)連携'), features:[F('保存先の選択(OneDrive・Google)','ほぞんさきのせんたく')],
+        desc:'保存先は、「設定」画面の「Google連携」と「OneDrive(Microsoft)連携」で、<b>あなた自身のアプリ登録の値</b>を入れて接続の設定を済ませてから使えます。入力した値とログインの情報は、この端末とそのサービスにだけ送られます。<b>チュートリアルでは接続しません</b>。手順は、各項目の「はじめての設定(手順を見る)」と、サービス側の設定画面で確認してください。' },
+      { title:'新しい世界として保存', view:'dashboard', beforeShow:()=>tutBy(()=>openFileMenu()), expectModalOpen:true, target:tq('#fmSaveTo'), features:[F('新しい世界として保存','あたらしいせかいとしてほぞん')],
+        desc:'「保存先に保存…(OneDrive など)」は、この世界のコピーを、保存先に『新しい世界』として作ります。端末の世界は消えません(移動ではありません)。保存されるのは、地形のタイルを含む世界ファイルの全体です。' },
+      { title:'保存先のリンクから開く', view:'settings', target:tqText('#view-settings','OneDrive(Microsoft)連携'), features:[F('保存先のリンクから開く','ほぞんさきのりんくからひらく')],
+        desc:'共有された世界は、リンクから開けます。OneDrive では「共有リンクから世界を開く」に共有リンクを入れます。Google では、ログインしたあとに「Driveの世界を開く」から、Googleの画面でファイルを選びます。<b>『結びつき』</b>(この端末の世界と保存先の世界が対応づけられた状態)ができると、以降の保存は、保存先の版を確認してから行われます。' },
+      { title:'保存先の最新を取り込む', view:'settings', target:tqText('#view-settings','OneDrive(Microsoft)連携'), features:[F('保存先の最新を取り込む','ほぞんさきのさいしんをとりこむ')],
+        desc:'すでに結びついている世界を、同じリンクからもう一度開くと、保存先の最新の内容を取り込めます。端末に、保存先へ届いていない変更があるときは、次の「3つの選択」が出ます。取り込みは、世界を別の内容に置き換える操作なので、内容をよく確認してから進めてください。' },
+      { title:'世界ファイルへの上書き', view:'dashboard', beforeShow:()=>tutBy(()=>openFileMenu()), expectModalOpen:true, target:tq('#fmOverwrite'), features:[F('世界ファイル(.json)への上書き','せかいふぁいるへのうわがき')],
+        desc:'「世界ファイルに上書き…(開いている世界 → ファイル)」は、開いている世界の内容で、既存の世界ファイル(.json)を上書きします。世界は端末に残ります。<b>チュートリアルでは実行しません</b>。実行すると、ファイルの元の内容は失われるので、上書き先をよく確かめてください。' },
+      { title:'ファイルの内容で置き換え', view:'dashboard', beforeShow:()=>tutBy(()=>openFileMenu()), expectModalOpen:true, target:tq('#fmReplace'), features:[F('ファイルの内容で置き換え','ふぁいるのないようでおきかえ')],
+        desc:'「ファイルの内容で置き換え…(ファイル → 開いている世界)」は、選んだファイルの内容で、開いている世界を置き換えます。<b>端末にある世界は消え、ファイルの内容になります</b>(上書きとは向きが逆です)。<b>チュートリアルでは実行しません</b>。必要なら、先に「世界データをJSONで書き出す」で、いまの世界を残しておいてください。' },
+      { title:'版と競合の確認', view:'dashboard', target:tq('#atlasFileState'), features:[F('版と競合の確認','はんときょうごうのかくにん')],
+        desc:'世界には『版』(保存のたびに進む番号)があり、結びついた世界は、保存のたびに保存先の版を確認します。別の端末が先に保存していて版が違う(『競合』)ときは、上書きせずに保存を止め、この変更は未保存のまま残ります。状態は、上のバーに表示されます。止まったときは、「世界データをJSONで書き出す」で変更を残してから、リンクから開き直してください。' },
+      { title:'未保存の変更があるときの3つの選択', view:'dashboard', target:null, features:[F('未保存の変更の3つの選択','みほぞんのへんこうのみっつのせんたく')],
+        desc:'端末に、保存先へ届いていない変更があるまま、保存先の内容を開こうとすると、次の3つから選びます。<br>(a) 端末の内容を保存先に送る(保存先の版が新しければ止めます)<br>(b) 保存先の内容で置き換える(端末の未保存の変更は失われます)<br>(c) 中止<br>迷ったら(c)を選び、先に「世界データをJSONで書き出す」で残してください。' },
+    ]},
+  { id:'advedit', label:'高度な編集', icon:'🛠',
+    desc:'フォントの設定・独自文字・キャンバスの拡張と切り取り・解像度・地理と投影・選択と削除・統計の比較・検索の拡張を学びます。',
+    steps:[
+      { title:'フォントを読み込む', view:'typography', beforeShow:()=>tutTypo('フォント'), target:tq('#tyBody'), features:[F('フォントの読み込み','ふぉんとのよみこみ')],
+        desc:'左のナビゲーションの「文字とフォント」の「フォント」タブで、「＋ フォントを読み込む」からフォントファイル(.ttf / .otf / .woff2 / .woff。1つ10MBまで)を登録します。フォントは世界のデータの中に保存されるので、大きいフォントは、保存・同期・書き出しが重くなります。' },
+      { title:'フォントの割り当て(範囲ごと)', view:'typography', beforeShow:()=>tutTypo('割り当て'), target:tq('#tyBody'), features:[F('フォントの設定(範囲ごと)','ふぉんとのせってい')],
+        desc:'「割り当て」タブで、「画面全体」「地図の文字」「系譜の図」「wiki の本文」「世界設定書」の範囲ごとに、使うフォントを選びます。「既定のフォント」は、これまでと同じ見た目です。読み込めないフォントを割り当てても、既定のフォントで表示されます。' },
+      { title:'独自文字(字形の作成)', view:'typography', beforeShow:()=>tutTypo('独自文字'), target:tq('#tyGNew'), features:[F('独自文字(字形の作成)','どくじもじ')],
+        desc:'「独自文字」タブの「＋ 独自文字を作る」で、架空の文字を作ります。『字形』(文字の形)を描いて登録します。ここで登録したものだけが使われ、自動で作られることはありません。' },
+      { title:'独自文字の入力と本文への挿入', view:'typography', beforeShow:()=>tutTypo('独自文字'), target:tq('#tyBody'), features:[F('独自文字の入力・本文への挿入','どくじもじのにゅうりょく')],
+        desc:'独自文字は、本文・メモ・系譜の名前などに入れられます。入力欄の下の「独自文字を入れる」から選ぶか、入力キー(:キー: の形)を打つと候補が出ます。自動で確定はしません。地図の地名には使えません。' },
+      { title:'解像度の変更', view:'map', beforeShow:()=>tutCanvasTab('解像度を変更'), expectModalOpen:true, target:tq('#modalBox'), features:[F('解像度','かいぞうど')],
+        desc:'地図の上のバーの「キャンバス」を押すと、この画面が開きます。「解像度を変更」では、地図の広さは変えずに、解像度だけを変えます。行政区画・河川・道路・都市などは劣化しません。変更の前に自動でバックアップされ、取り消し(元に戻す)でも戻せます。' },
+      { title:'キャンバスの拡張・切り取り', view:'map', beforeShow:()=>tutCanvasTab('キャンバスを拡張'), expectModalOpen:true, target:tq('#modalBox'), features:[F('キャンバスの拡張','きゃんばすのかくちょう'),F('キャンバスの切り取り','きゃんばすのきりとり')],
+        desc:'「キャンバスを拡張」は、既存の地図を維持したまま新しい土地を追加します(追加した領域は「未設定」で、ブラシで描けます)。「キャンバスを切り取る」は、地図の範囲を狭めます(切り取った部分は失われるので、確認してから行ってください)。' },
+      { title:'地理・投影設定', view:'map', beforeShow:()=>tutCanvasTab('地理・投影設定'), expectModalOpen:true, target:tq('#modalBox'), features:[F('地理・投影設定','ちりとうえいせってい')],
+        desc:'「地理・投影設定」は、3D地球儀のための、表示専用の設定です(惑星の大きさ・地図が覆う緯度経度・2D地図の『投影方式』=地図がどの図法で描かれているか)。2D地図のデータそのものは変わりません。' },
+      { title:'選択と削除(カスタム点・交易路)', view:'map', beforeShow:()=>{ tutBy(()=>{ const b=document.querySelector('[data-tool="obj-select"]'); if(b) b.click(); }); }, target:tq('[data-tool="obj-select"]'), features:[F('選択と削除(カスタム点・交易路)','せんたくとさくじょ')],
+        desc:'「点・交易路の選択と削除」ツールで、カスタム点と交易路をクリックで選びます(Shiftで追加。空白をドラッグして囲んでまとめて選べます)。Deleteキーまたは「削除」ボタンで削除すると、確認が出ます。サンプル世界の「サンプル交易路」で、実際に試せます(練習用の世界なので、本物のデータには影響しません)。' },
+      { title:'統計の比較(規格化)', view:'stats', beforeShow:()=>tutBy(()=>{ const b=document.getElementById('statCmpBtn'); if(b) b.click(); }), target:tq('#statCmpBtn'), features:[F('統計の比較(規格化)','とうけいのひかく')],
+        desc:'「比較モード」では、複数の国家・地域・都市の統計を、『規格化』(スケールの違う値を同じ基準にそろえること)して並べて比べます。「表示の方式」で、実数・「基準年＝100(指数化)」・別の指標で割る(面積あたり・人口あたり)を選べます。表示だけで、統計データは変わりません。' },
+      { title:'検索の拡張と、出典つきの関係検索', view:'dashboard', beforeShow:()=>{ tutBy(()=>{ openSearch(); tutClickText('#searchBox button, #searchBox [role=tab], #searchBox span','詳細検索'); }); }, search:true, target:tq('#searchBox'), features:[F('検索の拡張(範囲・種別)','けんさくのかくちょう'),F('出典つき関係検索','しゅってんつきかんけいけんさく')],
+        desc:'検索は、「通常」のほかに、範囲(年代など)や種別を絞る「詳細検索」と、2つの対象の関係を、どのデータに基づくかの出典つきで調べる「関係を調べる」があります。結果は画面に表示するだけで、データは変わりません。' },
+    ]},
+  { id:'aiassist', label:'AIアシスタント', icon:'✦',
+    desc:'AIの役割(提案を作るだけ)・提案の読み込みと差分・承認と却下・削除の確認・取り消し・接続先の設定を学びます。AIには接続せず、同梱した固定の例(atlas-proposal-v1)で進めます。',
+    steps:[
+      { title:'AIの役割: 提案を作るだけ', view:'dashboard', target:tq('#aiBtn'), features:[F('AIの役割(提案を作るだけ)','えーあいのやくわり')],
+        desc:'「AIアシスタント」は、世界のデータを調べて、変更の『提案』を作ります。<b>AIは提案を作るだけで、あなたが内容を確認して承認するまで、世界は変わりません</b>。AIも、現在の権限に従います。このチュートリアルではAIを呼ばず、同梱した固定の例で、承認の流れを試します。' },
+      { title:'接続先の設定: Claude と OpenAI互換', view:'dashboard', beforeShow:()=>tutAI('settings'), ai:true, target:tq('#aiPane-settings'), features:[F('接続先の設定','せつぞくさきのせってい'),F('Claude と OpenAI互換の違い','くろーどとおーぷんえーあいごかんのちがい')],
+        desc:'AIパネルの「設定」タブの「AIの接続先」で、接続先を選びます。「Claude(このページを開いているあなたのアカウント)」は、APIキーの設定が要りません。「OpenAI互換API / ローカルAI(Ollama・LM Studio など)」は、あなた自身のAPIキー、またはあなたのPC上のローカルAIに接続します。使えるモデルや設定の細かい内容は変わることがあるので、サービス側の設定画面で確認してください。' },
+      { title:'接続テストとキーの扱い', view:'dashboard', beforeShow:()=>tutAI('settings'), ai:true, target:tq('#aiTestBtn'), features:[F('接続テスト','せつぞくてすと'),F('キーの扱い','きーのあつかい')],
+        desc:'「接続テスト」は、設定した接続先につながるかを確かめます(<b>チュートリアルでは押さないでください。外部へ接続します</b>)。APIキーは、設定画面で入力するもので、「AI設定を書き出す(キーは含みません)」の書き出しにも、閲覧用JSONにも、このチュートリアルの記録にも含まれません。キーは他の人に見せないでください。' },
+      { title:'実行モード: 提案のみ', view:'dashboard', beforeShow:()=>tutAI('chat'), ai:true, target:tq('#aiModeSel'), features:[F('実行モード','じっこうもーど')],
+        desc:'「提案のみ」では、AIは変更の「提案」を作るだけです。あなたが内容を確認して承認するまで、世界は変わりません。AIが書き込みを直接行う方法はありません。' },
+      { title:'提案を読み込む(サンプル)', view:'dashboard', beforeShow:()=>tutBy(()=>openFileMenu()), expectModalOpen:true, target:tq('#fmProposal'), features:[F('提案の読み込み','ていあんのよみこみ')],
+        desc:'AIが作った提案ファイル(atlas-proposal-v1)は、「ファイル」メニューの「AI提案を読み込む…」で読み込みます。次のステップで、同梱した固定の例を、同じ画面で読み込みます(AIは使いません)。' },
+      { title:'提案の内容と差分', view:'dashboard', beforeShow:()=>tutBy(()=>{ closeModal(); tutOpenSampleProposal(); }), expectModalOpen:true, target:tq('[data-apx-dialog]'), features:[F('提案の読み込みと差分','ていあんのよみこみとさぶん')],
+        desc:'「AI提案」の画面に、提案の目的・追加/変更/削除の件数と、操作ごとの内容(変更前と変更後の差分)が出ます。<b>承認する前の世界は、まだ変わっていません</b>。この提案は、国家と都市の追加、都市の説明の変更、都市の削除の4件です(固定の例です)。' },
+      { title:'一部承認・すべて承認・却下', view:'dashboard', beforeShow:()=>{ const o=document.querySelector('[data-apx-dialog]'); if(!o) tutBy(()=>tutOpenSampleProposal()); }, expectModalOpen:true, target:tq('#modalBox'), features:[F('一部承認','いちぶしょうにん'),F('すべて承認','すべてしょうにん'),F('却下','きゃっか')],
+        desc:'「選んだ操作だけ承認」は、チェックした操作だけを世界に入れ、チェックを外した操作は却下します(ほかの操作に依存する操作は、一緒に選ばれます)。「すべて承認」は全部を入れ、「却下」は何も入れません。試すときは、ここで押して構いません(サンプル世界の中だけの変更です)。' },
+      { title:'削除の確認', view:'dashboard', beforeShow:()=>{ const o=document.querySelector('[data-apx-dialog]'); if(!o) tutBy(()=>tutOpenSampleProposal()); }, expectModalOpen:true, target:tq('#modalBox'), features:[F('削除の確認','さくじょのかくにん')],
+        desc:'提案に削除が含まれるときは、承認のときに、削除の件数と対象を示す『削除の確認』が、別に出ます。ここで「しない」を選ぶと、何も変わりません。この例には、都市の削除が1件含まれています。' },
+      { title:'取り消し(1回で全体)', view:'dashboard', target:tq('#undoBtn'), features:[F('取り消し(1回で全体)','とりけし')],
+        desc:'承認した提案は、画面上部の「元に戻す」を<b>1回</b>押すだけで、提案の全体(追加・変更・削除のすべて)が取り消されます。AIの変更は、通常の編集と同じ履歴に入ります。これで、AIアシスタントのカテゴリーは終わりです。' },
+    ]},
+  ];
+}
+/* ---- 機能の索引: 機能名の一覧(50音順・カテゴリ別)と、検索 ---- */
+function tutFeatureList(){
+  Tutorial.cats = Tutorial.cats || buildTutorialCategories();
+  const out=[]; Tutorial.cats.forEach(c=>c.steps.forEach((s,i)=>(s.features||[]).forEach(f=>out.push({name:f[0],kana:f[1]||f[0],catId:c.id,cat:c.label,stepIdx:i,title:s.title,text:String(s.desc||'').replace(/<[^>]+>/g,'')}))));
+  return out;
+}
+function openTutorialIndex(){
+  const feats=tutFeatureList();
+  const body=`<div class="lp-note" style="margin-bottom:8px;">機能名を選ぶと、その説明のステップが開きます(サンプル世界に切り替わります)。</div>
+    <div class="lp-row"><input id="tutIdxQ" type="search" placeholder="機能名・説明の文字で探す" style="flex:1;"><select id="tutIdxMode"><option value="kana">50音順</option><option value="cat">カテゴリ別</option></select></div>
+    <div id="tutIdxList" style="max-height:52vh;overflow:auto;margin-top:8px;"></div>`;
+  openModal('機能の索引', body, [{label:'チュートリアルの一覧へ', onClick:()=>{ closeModal(); openTutorialHub(); }},{label:'閉じる', cls:'primary', onClick:closeModal}]);
+  const draw=()=>{ const q=String(document.getElementById('tutIdxQ').value||'').trim().toLowerCase(), mode=document.getElementById('tutIdxMode').value;
+    let L=feats.filter(f=>!q||(f.name+' '+f.title+' '+f.text+' '+f.cat).toLowerCase().indexOf(q)>=0);
+    const item=(f)=>`<button class="btn small" style="display:block;width:100%;text-align:left;margin:2px 0;" data-tut-feat="${esc(f.catId)}:${f.stepIdx}">${esc(f.name)} <span class="lp-note">— ${esc(f.cat)}・${esc(f.title)}</span></button>`;
+    let html='';
+    if(mode==='cat'){ const seen=[]; L.forEach(f=>{ if(!seen.includes(f.catId)) seen.push(f.catId); }); html=seen.map(id=>{ const items=L.filter(f=>f.catId===id); return `<div class="lp-note" style="margin:8px 0 2px;"><b>${esc(items[0].cat)}</b></div>`+items.map(item).join(''); }).join(''); }
+    else { L=L.slice().sort((a,b)=>a.kana.localeCompare(b.kana,'ja')); html=L.map(item).join(''); }
+    document.getElementById('tutIdxList').innerHTML=html||'<div class="lp-note">該当する機能がありません。</div>';
+    document.querySelectorAll('[data-tut-feat]').forEach(b=>b.addEventListener('click',()=>{ const [cid,si]=b.dataset.tutFeat.split(':'); closeModal(); startTutorialCategory(cid, Number(si)); })); };
+  document.getElementById('tutIdxQ').addEventListener('input',draw); document.getElementById('tutIdxMode').addEventListener('change',draw); draw();
+}
 const Tutorial = {
   active:false, cats:null, catIdx:0, stepIdx:0,
   practiceWorldId:null, prevWorldId:null, prevRole:null, prevView:null,
@@ -9393,6 +9644,7 @@ function tutCreatePracticeWorld(){
 }
 function tutEnterPracticeWorld(){
   Tutorial.prevWorldId = DB.currentWorldId;
+  { const _uw=DB.worlds[DB.currentWorldId]; Tutorial.prevCL=_uw?JSON.parse(JSON.stringify(_uw.customLayers||[])):null; }
   Tutorial.prevRole = currentRole;
   currentRole = 'admin';
   Tutorial.practiceWorldId = tutCreatePracticeWorld();
@@ -9428,6 +9680,7 @@ async function tutExitPracticeWorld(save){
   if(DB.currentWorldId){
     document.getElementById('welcome').classList.add('hidden'); document.getElementById('app').style.display='flex';
     fullRerender(); switchView('dashboard');
+    { const _u=DB.worlds[DB.currentWorldId]; if(_u&&Tutorial.prevCL&&_u.id===Tutorial.prevWorldId) _u.customLayers=Tutorial.prevCL; }   /* 練習中に自動で足された既定レイヤーを戻す */
   } else {
     document.getElementById('app').style.display='none'; document.getElementById('welcome').classList.remove('hidden');
   }
@@ -9435,27 +9688,30 @@ async function tutExitPracticeWorld(save){
 
 function openTutorialHub(){
   Tutorial.cats = Tutorial.cats || buildTutorialCategories();
-  const rows = Tutorial.cats.map(c=>{
-    const st = tutCategoryStatus(c.id);
+  const pos=tutLoadPos();
+  const row=(c)=>{ const st=tutCategoryStatus(c.id); const prog=(st==='inprogress'&&Number.isInteger(pos[c.id]))?` (${pos[c.id]+1}/${c.steps.length})`:(st==='completed'?` (${c.steps.length}/${c.steps.length})`:` (全${c.steps.length}ステップ)`);
     return `<div class="tut-hub-cat" data-tut-cat="${c.id}">
-      <div class="tuth-row"><h5>${c.icon} ${esc(c.label)}</h5><span class="tut-badge ${st}">${TUT_STATUS_LABEL[st]}</span></div>
+      <div class="tuth-row"><h5>${c.icon} ${esc(c.label)}</h5><span class="tut-badge ${st}" data-tut-status="${c.id}">${TUT_STATUS_LABEL[st]}${prog}</span></div>
       <p>${esc(c.desc)}</p>
-    </div>`;
-  }).join('');
-  const body = `<div class="lp-note" style="margin-bottom:10px;">実際の画面を操作しながら、カテゴリーごとに機能を学べます。操作を試すあいだは、チュートリアル専用のサンプル世界に切り替わります(現在のデータは保護されます)。</div>${rows}`;
+    </div>`; };
+  const base=Tutorial.cats.filter(c=>!TUT_NEW_CATS.includes(c.id)), add=Tutorial.cats.filter(c=>TUT_NEW_CATS.includes(c.id));
+  const body = `<div class="lp-note" style="margin-bottom:10px;">実際の画面を操作しながら、カテゴリーごとに機能を学べます。操作を試すあいだは、チュートリアル専用のサンプル世界に切り替わります(現在の世界は変わりません)。進み具合は、この端末の中にだけ記録され、世界のデータには含まれません。</div>
+    <div class="lp-note" style="margin:8px 0 4px;"><b>基本のカテゴリー</b></div>${base.map(row).join('')}
+    <div class="lp-note" style="margin:12px 0 4px;"><b>追加の機能(v36 までに加わった機能)</b></div>${add.map(row).join('')}`;
   openModal('チュートリアル', body, [
     {label:'進捗をリセット', onClick:()=>{ tutResetAllProgress(); closeModal(); openTutorialHub(); }},
+    {label:'機能の索引', onClick:()=>{ closeModal(); openTutorialIndex(); }},
     {label:'閉じる', cls:'primary', onClick: closeModal},
   ]);
   document.querySelectorAll('[data-tut-cat]').forEach(el=> el.addEventListener('click', ()=>{ closeModal(); startTutorialCategory(el.dataset.tutCat); }));
 }
-function startTutorialCategory(catId){
+function startTutorialCategory(catId, stepIdx){
   Tutorial.cats = Tutorial.cats || buildTutorialCategories();
   const idx = Tutorial.cats.findIndex(c=>c.id===catId);
   if(idx<0) return;
   if(!Tutorial.active){ Tutorial.prevView = currentView; tutEnterPracticeWorld(); }
-  Tutorial.active = true; Tutorial.catIdx = idx; Tutorial.stepIdx = 0;
-  tutSetCategoryStatus(catId, 'inprogress');
+  Tutorial.active = true; Tutorial.catIdx = idx; Tutorial.stepIdx = Math.max(0, Math.min(Tutorial.cats[idx].steps.length-1, stepIdx|0));
+  if(tutCategoryStatus(catId)!=='completed') tutSetCategoryStatus(catId, 'inprogress');   /* 完了済みは、やり直しても完了のまま(進捗のリセットで戻る) */
   document.getElementById('tutorialLayer').classList.add('active');
   tutRenderStep();
 }
@@ -9511,6 +9767,7 @@ function tutResolveAllowElements(step){
   return out;
 }
 function tutIsAllowedClick(node){
+  if(Tutorial._bypass) return true;   /* チュートリアル自身の自動操作(画面・タブの切り替え) */
   if(!node) return false;
   const layer = document.getElementById('tutorialLayer');
   if(layer && layer.contains(node)) return true; // チュートリアル自身のUI(次へ/戻る/スキップ/終了)は常に許可
@@ -9569,11 +9826,14 @@ function tutPositionUI(step){
   } else {
     hl.classList.add('none');
     setBlockers(null);
+    if(step.target){ const hint=document.getElementById('tutActionHint'); hint.textContent='この画面では表示されません。「次へ」で進みます'; hint.classList.add('show'); document.getElementById('tutNextBtn').disabled=false; Tutorial.missingTarget=true; }
     card.style.left = Math.round((vw-320)/2)+'px'; card.style.top = Math.round(vh*0.28)+'px';
   }
 }
 function tutRenderStep(){
-  tutTeardownStepListeners();
+  tutTeardownStepListeners(); Tutorial.missingTarget=false;
+  try{ tutCleanupOverlays(tutCurrentStep()); }catch(e){ console.warn(e); }
+  try{ tutSavePos(tutCurrentCat().id, Tutorial.stepIdx); }catch(e){}
   const cat = tutCurrentCat(); const step = tutCurrentStep();
   if(tutEnsureSampleNations(cat.id)){ try{ Store.resolved.clear(); fullRerender(); }catch(e){ console.warn(e); } }
   if(step.view && currentView!==step.view) switchView(step.view);
@@ -9604,7 +9864,7 @@ function tutPrevStep(){
   if(Tutorial.catIdx>0){ Tutorial.catIdx--; Tutorial.stepIdx=Tutorial.cats[Tutorial.catIdx].steps.length-1; tutRenderStep(); }
 }
 async function endTutorial(){
-  tutTeardownStepListeners();
+  tutTeardownStepListeners(); try{ tutCleanupOverlays(null); }catch(e){}
   document.getElementById('tutorialLayer').classList.remove('active');
   closeModal();
   Tutorial.active = false;
