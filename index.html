@@ -288,7 +288,7 @@ table.datatable td.txt{font-family:var(--font-body);}
 }
 #tooltip .tt-name{font-weight:600;color:#f2ceA0;display:block;margin-bottom:2px;}
 #tooltip .tt-desc{color:var(--text-dim);display:block;}
-@media(hover:none){ #tooltip{display:none!important;} }
+@media(hover:none){ html:not(.ui-mobile) #tooltip{display:none!important;} }   /* v41: モバイルの表示では、長押しで説明を出す */
 .toast{background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:8px 14px;border-radius:var(--radius-s);font-size:12px;box-shadow:0 6px 18px rgba(0,0,0,.35);}
 
 /* ===== search overlay ===== */
@@ -579,6 +579,30 @@ html,body{max-width:100%;overflow-x:hidden;}
   #mapTimeline .tlrow1,#mapTimeline .tlrow2{flex-wrap:wrap;}
   .tbl{display:block;overflow-x:auto;}
 }
+
+/* v41: 端末の判定(html.ui-mobile / html.ui-pc)。「モバイルかPCか」は幅では決めない。幅の @media は、折り返しやパネルの幅だけ */
+html.ui-mobile button,html.ui-mobile .btn,html.ui-mobile .icon-btn,html.ui-mobile select,html.ui-mobile summary,html.ui-mobile [role="button"],html.ui-mobile [role="tab"],html.ui-mobile .navitem,html.ui-mobile .sizebtn,html.ui-mobile .ai-tab{min-height:44px;min-width:44px;}
+html.ui-mobile input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=range]):not([type=color]):not([type=file]),html.ui-mobile input[type=range]{min-height:44px;}
+html.ui-mobile input[type=color]{min-width:44px;min-height:44px;}
+html.ui-mobile input[type=checkbox],html.ui-mobile input[type=radio]{width:24px;height:24px;margin:10px;}
+html.ui-mobile label:has(>input[type=checkbox]),html.ui-mobile label:has(>input[type=radio]){display:inline-flex;align-items:center;gap:6px;min-height:44px;min-width:44px;}
+html.ui-mobile #maptoolbar,html.ui-mobile .toolbar,html.ui-mobile #topbar .group,html.ui-mobile .mfoot{gap:8px;}
+html.ui-mobile .layerrow,html.ui-mobile .lp-row{gap:8px;}
+html.ui-mobile #maptoolbar{row-gap:8px;}
+html.ui-mobile #topbar{height:auto;min-height:52px;flex-wrap:wrap;}
+html.ui-mobile #toolbarToggle{display:inline-flex;align-items:center;}
+html.ui-mobile #maptoolbar.tb-collapsed>*:not(#toolbarToggle):not(#layerPanelToggle):not(#infoPanelToggle):not(#finishLineBtn):not(#cancelLineBtn):not(#vertexDeleteModeBtn):not(#lineDeleteModeBtn){display:none !important;}
+html.ui-mobile #mapLayerPanel{position:absolute;left:0;top:0;bottom:0;z-index:20;box-shadow:6px 0 14px rgba(0,0,0,.4);display:none;width:min(86vw,260px);}
+html.ui-mobile #mapLayerPanel.show{display:block;}
+html.ui-mobile #mapRightPanel{position:absolute;right:0;top:0;bottom:0;z-index:20;box-shadow:-6px 0 14px rgba(0,0,0,.4);display:none;width:min(86vw,280px);}
+html.ui-mobile #mapRightPanel.show{display:block;}
+html.ui-mobile #mapcanvaswrap{touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+html.ui-mobile [data-tip]:not(input):not(textarea):not(select){-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+html.ui-mobile.drawing-lock,html.ui-mobile.drawing-lock body{overflow:hidden !important;overscroll-behavior:none;}
+#uiModeAsk{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:100000;max-width:min(94vw,460px);background:var(--panel,#1c2430);color:var(--text,#e6e9ee);border:1px solid var(--brass,#c9a45c);border-radius:10px;padding:12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.55);font-size:13px;}
+#uiModeAsk .ask-b{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
+#uiModePanel .uim-opts{display:flex;flex-wrap:wrap;gap:14px;margin:8px 0;}
+#uiModePanel .uim-status{font-size:13px;margin:6px 0;}
 </style>
 
 <div id="welcome">
@@ -1019,6 +1043,153 @@ const fmtNum = (n) => { if(n===null||n===undefined||n==='') return '—'; const 
 const esc = (s) => String(s===undefined||s===null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
 function download(filename, content, mime){ const blob=new Blob([content],{type:mime||'application/octet-stream'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},400); }
+/* =========================================================
+   v41: モバイル版とPC版を、1つのリンクで扱う
+   ・「モバイルかPCか」の判定に、画面の大きさ(innerWidth・幅の matchMedia)は使わない。幅は、折り返しやパネルの幅などの調整だけ。
+   ・判定の情報: pointer / any-pointer / hover / any-hover / navigator.maxTouchPoints / navigator.userAgentData.mobile / navigator.userAgent(予備)
+     画面の向き(orientation)は、判定に使わない(レイアウトの調整のクラスだけ)。
+   ・利用者の設定(自動・モバイル・PC)は、この端末の localStorage だけに保存する。世界データ・閲覧用JSON・書き出しには含めない。
+   ・判定は起動時に決めて記録する。画面の向きや大きさが変わっても変えない。入力方法が変わったとき(キーボードの着脱など)は、確認を出す(自動では切り替えない)。
+   ========================================================= */
+const DeviceMode=(function(){
+  const KEY='atlasUiMode_v1', PREFS=['auto','mobile','pc'];
+  const QS={coarse:'(pointer: coarse)',fine:'(pointer: fine)',anyCoarse:'(any-pointer: coarse)',anyFine:'(any-pointer: fine)',anyHover:'(any-hover: hover)',hoverNone:'(hover: none)'};
+  const UA_MOBILE=/Mobi|iPhone|iPod|Windows Phone|Android.+Mobile/i;
+  let memPref=null; const st={pref:'auto',detected:null,mode:'pc',declined:null}; const listeners=[];
+  function mm(q){ try{ return typeof window.matchMedia==='function' && !!window.matchMedia(q).matches; }catch(e){ return false; } }
+  function signals(){ const s={}; Object.keys(QS).forEach(k=>{ s[k]=mm(QS[k]); });
+    s.touchPoints=Math.max(0,Number(navigator.maxTouchPoints)||0); let ud=null; try{ ud=navigator.userAgentData; }catch(e){}
+    s.uaMobile=(ud&&typeof ud.mobile==='boolean')?ud.mobile:null; s.ua=String(navigator.userAgent||''); return s; }
+  /* 判定(自動のとき)。順序:
+     1) 指(coarse)とマウス(fine / any-hover)の両方がある → PC   2) マウスがある → PC   3) 指だけ(マウスなし) → モバイル
+     4) ここまでで決まらないとき: userAgentData.mobile があればそれ(優先)、なければ userAgent の文字列(予備)   5) それでも決まらない → PC */
+  function decide(s){
+    const R=(mode,rule,text)=>({mode,rule,text});
+    const finger=!!(s.coarse||s.anyCoarse||s.touchPoints>0), mouse=!!(s.fine||s.anyFine||s.anyHover);
+    if(finger&&mouse) return R('pc','both','指とマウスの両方を検出');
+    if(mouse) return R('pc','mouse','マウスの操作を検出');
+    if(s.coarse||s.anyCoarse||(s.hoverNone&&s.touchPoints>0)) return R('mobile','finger','指での操作を検出');
+    if(s.uaMobile!==null&&s.uaMobile!==undefined) return R(s.uaMobile?'mobile':'pc','ua-data','端末の種類の情報から判定');
+    if(UA_MOBILE.test(s.ua||'')) return R('mobile','ua','端末の種類の文字列から判定');
+    return R('pc','unknown','判定できなかったため');
+  }
+  function detect(){ const s=signals(); const d=decide(s); d.signals=s; return d; }
+  function readPref(){ try{ const j=JSON.parse(localStorage.getItem(KEY)||'null'); if(j&&PREFS.includes(j.pref)) return j.pref; }catch(e){} return PREFS.includes(memPref)?memPref:'auto'; }
+  function writePref(p){ memPref=p; try{ localStorage.setItem(KEY,JSON.stringify({pref:p})); }catch(e){} }
+  function apply(){
+    const prev=st.mode; st.mode=(st.pref==='auto')?st.detected.mode:st.pref;
+    const h=document.documentElement; h.classList.toggle('ui-mobile',st.mode==='mobile'); h.classList.toggle('ui-pc',st.mode!=='mobile'); h.dataset.uiMode=st.mode; h.dataset.uiPref=st.pref;
+    const ev={mode:st.mode,pref:st.pref,changed:prev!==st.mode}; listeners.forEach(f=>{ try{ f(ev); }catch(e){} });
+    try{ document.dispatchEvent(new CustomEvent('atlas-ui-mode',{detail:ev})); }catch(e){}
+  }
+  /* 向き(縦・横)は、レイアウトの調整のクラスだけ。判定には使わない */
+  function orient(){ const h=document.documentElement; const p=mm('(orientation: portrait)'); h.classList.toggle('orient-portrait',p); h.classList.toggle('orient-landscape',!p); }
+  function askSwitch(d){
+    const old=document.getElementById('uiModeAsk'); if(old) old.remove();
+    const el=document.createElement('div'); el.id='uiModeAsk'; el.setAttribute('role','alertdialog'); el.setAttribute('aria-label','表示の切り替えの確認');
+    const lab=(m)=>m==='mobile'?'モバイル':'PC';
+    el.innerHTML=`<div>操作の方式が変わりました。表示を切り替えますか？</div><div style="font-size:12px;opacity:.8;margin-top:4px;">いまの表示: ${lab(st.mode)} → 切り替え後: ${lab(d.mode)}(${esc(d.text)})</div><div class="ask-b"><button class="btn primary" data-ask="yes">切り替える</button><button class="btn" data-ask="no">このまま</button></div>`;
+    document.body.appendChild(el);
+    el.addEventListener('click',(e)=>{ const b=e.target.closest&&e.target.closest('[data-ask]'); if(!b) return;
+      if(b.dataset.ask==='yes'){ st.detected=d; st.declined=null; apply(); } else { st.declined=d.mode; }
+      el.remove(); });
+    return el;
+  }
+  let tmr=null;
+  function check(){ if(st.pref!=='auto') return; const d=detect();
+    if(d.mode===st.detected.mode){ st.detected=d; st.declined=null; return; }   /* 同じ表示のまま(理由だけ変わった) */
+    if(st.declined===d.mode) return; if(document.getElementById('uiModeAsk')) return; askSwitch(d); }
+  function watch(){ Object.keys(QS).forEach(k=>{ try{ const m=window.matchMedia(QS[k]); const h=()=>{ clearTimeout(tmr); tmr=setTimeout(check,200); }; if(m.addEventListener) m.addEventListener('change',h); else if(m.addListener) m.addListener(h); }catch(e){} });
+    try{ const o=window.matchMedia('(orientation: portrait)'); const h=()=>orient(); if(o.addEventListener) o.addEventListener('change',h); }catch(e){} }
+  const api={
+    KEY, decide, signals, detect,
+    isMobile(){ return st.mode==='mobile'; }, mode(){ return st.mode; }, pref(){ return st.pref; }, detected(){ return st.detected; },
+    setPref(p){ if(!PREFS.includes(p)) return false; writePref(p); st.pref=p; if(p==='auto'){ st.detected=detect(); st.declined=null; } apply(); return true; },
+    describe(){ const d=st.detected, lab=(m)=>m==='mobile'?'モバイル':'PC'; return {auto:'自動判定：'+lab(d.mode)+'（'+d.text+'）', using:lab(st.mode), pref:st.pref}; },
+    onChange(f){ listeners.push(f); }, ask:askSwitch, longPressMs:500
+  };
+  st.pref=readPref(); st.detected=detect(); orient(); apply(); watch();
+  return api;
+})();
+window.DeviceMode=DeviceMode;
+
+/* ---------- モバイルの操作(判定が「モバイル」のときだけ働く): ピンチ・2本指のパン・描画中のスクロール停止・長押しの説明 ---------- */
+const MobileInput=(function(){
+  const touches=new Map(); let gesture=null, first=null, synth=false, lp=null, lpFired=null, tipTimer=null; const suppress=new Set();
+  const mapWrap=()=>document.getElementById('mapcanvaswrap');
+  const inMap=(e)=>{ const w=mapWrap(); return !!(w&&e.target&&w.contains(e.target)); };
+  const mob=()=>DeviceMode.isMobile();
+  const posIn=(e)=>{ const r=mapWrap().getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
+  const stop=(e)=>{ e.stopImmediatePropagation(); if(e.cancelable) e.preventDefault(); };
+  const lock=(on)=>document.documentElement.classList.toggle('drawing-lock',on);
+  function metrics(){ const ids=gesture.ids; const a=touches.get(ids[0]), b=touches.get(ids[1]); if(!a||!b) return null; return {cx:(a.x+b.x)/2, cy:(a.y+b.y)/2, dist:Math.hypot(a.x-b.x,a.y-b.y)}; }
+  /* 1本目の操作(ブラシなど)を、いつもの後始末(pointercancel)で止める。始めて間もない描画は取り消す(2本指の操作の最初の指が、点を描いてしまわないように) */
+  function cancelFirst(){
+    const d=MapView.drag; if(!d||!first) return; const recent=Date.now()-first.t0<600; const was=d.type; const n0=(typeof History!=='undefined'&&History.undo)?History.undo.length:0;
+    if(was==='selpan') d.moved=true;
+    synth=true; try{ mapWrap().dispatchEvent(new PointerEvent('pointercancel',{pointerId:first.id,pointerType:'touch',bubbles:true,cancelable:true})); }catch(e){} synth=false;
+    if(was==='stroke'&&recent&&History.undo.length>n0){ try{ const e=History.undo.pop(); e.undo(); afterHistoryApply(); }catch(e2){} }
+  }
+  document.addEventListener('pointerdown',(e)=>{
+    if(!mob()||e.pointerType!=='touch'||!inMap(e)) return;
+    touches.set(e.pointerId,posIn(e)); lock(true);
+    if(touches.size===1){ first={id:e.pointerId,t0:Date.now()}; return; }
+    if(!gesture){ cancelFirst(); gesture={ids:[...touches.keys()].slice(0,2)}; const m=metrics(); if(m) Object.assign(gesture,m); gesture.ids.forEach(i=>suppress.add(i)); document.documentElement.classList.add('gesturing'); }
+    suppress.add(e.pointerId); stop(e);
+  },true);
+  document.addEventListener('pointermove',(e)=>{
+    if(e.pointerType!=='touch'||!touches.has(e.pointerId)||synth) return;
+    touches.set(e.pointerId,posIn(e));
+    if(gesture&&gesture.ids.includes(e.pointerId)){ const m=metrics(); if(m){ MapView.offX+=m.cx-gesture.cx; MapView.offY+=m.cy-gesture.cy; if(gesture.dist>8&&m.dist>8) zoomAt(m.cx,m.cy,m.dist/gesture.dist); else renderMap(); gesture.cx=m.cx; gesture.cy=m.cy; gesture.dist=m.dist; } stop(e); return; }
+    if(suppress.has(e.pointerId)) stop(e);
+  },true);
+  const up=(e)=>{
+    if(e.pointerType!=='touch'||synth||!touches.has(e.pointerId)) return;
+    const swallow=suppress.has(e.pointerId); touches.delete(e.pointerId);
+    if(gesture&&touches.size<2){ gesture=null; document.documentElement.classList.remove('gesturing'); touches.forEach((v,id)=>suppress.add(id)); }
+    if(touches.size===0){ suppress.clear(); first=null; lock(false); }
+    if(swallow) stop(e);
+  };
+  document.addEventListener('pointerup',up,true); document.addEventListener('pointercancel',up,true);
+  /* ページのスクロール・ブラウザの拡大に、指の操作を取られない(描画・ピンチ・パンの最中) */
+  document.addEventListener('touchmove',(e)=>{ if(mob()&&inMap(e)&&e.cancelable) e.preventDefault(); },{passive:false,capture:true});
+  /* ツールの説明: 長押し(500ms)で表示。PCは、これまでどおりホバー(initTooltips) */
+  const cancelLP=()=>{ if(lp&&lp.t) clearTimeout(lp.t); lp=null; };
+  const hideTip=()=>{ clearTimeout(tipTimer); if(window.__tipHide) window.__tipHide(); };
+  document.addEventListener('pointerdown',(e)=>{
+    if(!mob()||e.pointerType!=='touch') return; const el=e.target.closest&&e.target.closest('[data-tip]'); cancelLP();
+    if(!el){ hideTip(); return; }
+    lp={el,x:e.clientX,y:e.clientY,t:setTimeout(()=>{ lpFired={el,t:Date.now()}; window.__tipLpAt=Date.now(); if(window.__tipShow) window.__tipShow(el); clearTimeout(tipTimer); tipTimer=setTimeout(hideTip,4000); lp=null; },DeviceMode.longPressMs)};
+  },true);
+  document.addEventListener('pointermove',(e)=>{ if(lp&&e.pointerType==='touch'&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)>10) cancelLP(); },true);
+  document.addEventListener('pointerup',cancelLP,true); document.addEventListener('pointercancel',cancelLP,true);
+  document.addEventListener('click',(e)=>{ if(lpFired&&Date.now()-lpFired.t<1500&&lpFired.el.contains(e.target)){ e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); lpFired=null; } },true);
+  document.addEventListener('contextmenu',(e)=>{ if(mob()&&e.target.closest&&e.target.closest('[data-tip]')) e.preventDefault(); },true);
+  /* 表示が切り替わったら、ツールバーの開閉をそれに合わせる(再読み込みなし) */
+  DeviceMode.onChange((ev)=>{ if(!ev.changed) return; try{ const bar=document.getElementById('maptoolbar'), tgl=document.getElementById('toolbarToggle'); if(!bar||!tgl||typeof MapView==='undefined') return;
+      const c=ev.mode==='mobile'||window.matchMedia('(max-width: 639.98px)').matches; MapView.tbCollapsed=c; bar.classList.toggle('tb-collapsed',c); tgl.setAttribute('aria-expanded',String(!c)); tgl.classList.toggle('active',!c);
+      ['mapLayerPanel','mapRightPanel'].forEach(id=>{ const p=document.getElementById(id); if(p) p.classList.remove('show'); }); window.dispatchEvent(new Event('resize')); }catch(e){} });
+  return {touches};
+})();
+
+/* ---------- 設定画面: 表示の種類(この端末だけに保存) ---------- */
+function renderUiModePanel(){
+  const body=document.getElementById('settingsBody'); if(!body) return; let p=document.getElementById('uiModePanel');
+  const d=DeviceMode.describe(); const pref=DeviceMode.pref();
+  const html=`<h3>表示の種類(この端末の設定)</h3>
+    <div class="uim-status" id="uiModeStatus" data-mode="${DeviceMode.mode()}">${esc(d.auto)}　／　いま使っている表示: <b>${esc(d.using)}</b>${pref==='auto'?'':'(手動で選択)'}</div>
+    <div class="uim-opts" role="radiogroup" aria-label="表示の種類">
+      <label><input type="radio" name="uiModePref" value="auto" ${pref==='auto'?'checked':''}> 自動（推奨）</label>
+      <label><input type="radio" name="uiModePref" value="mobile" ${pref==='mobile'?'checked':''}> モバイル</label>
+      <label><input type="radio" name="uiModePref" value="pc" ${pref==='pc'?'checked':''}> PC</label>
+    </div>
+    <div class="lp-note">自動のときは、入力方法(指かマウスか)などから判定します。画面の大きさでは判定しません。指とマウスの両方がある端末は、PCとして扱います。この設定はこの端末だけに保存され、世界データ・書き出しには含まれません。どちらの表示でも、使える機能は同じです。</div>`;
+  if(!p){ p=document.createElement('div'); p.className='panel'; p.id='uiModePanel'; body.insertBefore(p,body.firstChild); }
+  p.innerHTML=html;
+}
+document.addEventListener('change',(ev)=>{ const t=ev.target; if(!t||!t.matches||!t.matches('input[name="uiModePref"]')) return; DeviceMode.setPref(t.value); renderUiModePanel(); });
+document.addEventListener('atlas-ui-mode',()=>{ if(document.getElementById('uiModePanel')) renderUiModePanel(); });
+(function(){ const o=renderSettingsView; renderSettingsView=function(){ const r=o.apply(this,arguments); try{ renderUiModePanel(); }catch(e){ console.warn(e); } return r; }; })();
 function toast(msg, type){ const el=document.createElement('div'); el.className='toast'; if(type==='err') el.style.borderColor='var(--danger)'; el.textContent=msg; document.getElementById('toastwrap').appendChild(el); setTimeout(()=>{ el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),320); },type==='err'?4200:2600); }
 function yearLabel(y, world){ const cal = world && world.calendarUnit ? world.calendarUnit : '年'; return `${y}${cal}`; }
 function normalizeTreatyDate(v){
@@ -5980,10 +6151,10 @@ function renderMapToolbar(){
   { /* 狭い画面(640px未満)では、描画ツール一覧を既定で折りたたみ「ツール」ボタンで開閉する */
     const tgl=document.getElementById('toolbarToggle'); const mq=window.matchMedia('(max-width: 639.98px)');
     const applyTb=()=>{ const c=!!MapView.tbCollapsed; bar.classList.toggle('tb-collapsed',c); tgl.setAttribute('aria-expanded',String(!c)); tgl.classList.toggle('active',!c); };
-    if(MapView.tbCollapsed===undefined) MapView.tbCollapsed=mq.matches;
+    if(MapView.tbCollapsed===undefined) MapView.tbCollapsed=(mq.matches||DeviceMode.isMobile());
     applyTb();
     tgl.addEventListener('click',()=>{ MapView.tbCollapsed=!MapView.tbCollapsed; applyTb(); window.dispatchEvent(new Event('resize')); });
-    bar.querySelectorAll('[data-tool]').forEach(b=> b.addEventListener('click',()=>{ if(mq.matches){ MapView.tbCollapsed=true; applyTb(); window.dispatchEvent(new Event('resize')); } }));
+    bar.querySelectorAll('[data-tool]').forEach(b=> b.addEventListener('click',()=>{ if(mq.matches||DeviceMode.isMobile()){ MapView.tbCollapsed=true; applyTb(); window.dispatchEvent(new Event('resize')); } }));
     if(!window.__tbMq){ window.__tbMq=mq; mq.addEventListener('change',(e)=>{ MapView.tbCollapsed=e.matches; const b2=document.getElementById('maptoolbar'); if(b2){ b2.classList.toggle('tb-collapsed',e.matches); const t2=document.getElementById('toolbarToggle'); if(t2) t2.setAttribute('aria-expanded',String(!e.matches)); } window.dispatchEvent(new Event('resize')); }); }
   }
   refreshToolbarActive();
@@ -9251,10 +9422,11 @@ function initTooltips(){
     activeEl = el; place(el);
   }
   function hide(){ tip.style.display='none'; activeEl=null; }
-  document.addEventListener('mouseover', (e)=>{ const el = e.target.closest('[data-tip]'); if(!el || el===activeEl) return; show(el); });
+  window.__tipShow=show; window.__tipHide=hide;   /* v41: モバイルの長押し表示から使う */
+  document.addEventListener('mouseover', (e)=>{ if(DeviceMode.isMobile()) return; const el = e.target.closest('[data-tip]'); if(!el || el===activeEl) return; show(el); });
   document.addEventListener('mouseout', (e)=>{ const el = e.target.closest('[data-tip]'); if(el && (!e.relatedTarget || !el.contains(e.relatedTarget))) hide(); });
-  document.addEventListener('mousedown', hide);
-  document.addEventListener('focusin', (e)=>{ const el=e.target.closest('[data-tip]'); if(el) show(el); });
+  document.addEventListener('mousedown', ()=>{ if(window.__tipLpAt && Date.now()-window.__tipLpAt<900) return; hide(); });
+  document.addEventListener('focusin', (e)=>{ if(DeviceMode.isMobile()) return; const el=e.target.closest('[data-tip]'); if(el) show(el); });
   document.addEventListener('focusout', (e)=>{ const el=e.target.closest('[data-tip]'); if(el) hide(); });
   document.addEventListener('scroll', hide, true);
   window.addEventListener('resize', hide);
