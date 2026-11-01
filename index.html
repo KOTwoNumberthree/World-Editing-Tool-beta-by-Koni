@@ -10807,7 +10807,7 @@ async function buildElevTextureCanvas(targetW){
    ここで扱う高さは符号付き(-255〜255相当)を想定した実装にしてあり、将来的にマイナス方向
    (陥没・海溝など)の値を扱うようになっても計算式を変える必要がないようにしている。
    元の2D標高データ・元の頂点配置の緯度経度対応(UV)は変更せず、半径だけを変える。 */
-function applyElevationToGeometry(geometry, heightCanvas, exaggeration){
+function applyElevationToGeometry(geometry, heightCanvas, exaggeration, hdataIn){
   if(!geometry) return;
   const pos=geometry.attributes.position, uv=geometry.attributes.uv;
   const base=geometry.userData.baseRadius||100;
@@ -10821,7 +10821,7 @@ function applyElevationToGeometry(geometry, heightCanvas, exaggeration){
     return;
   }
   const hw=heightCanvas.width, hh=heightCanvas.height; const GW=geoWrapOn();
-  const hdata=heightCanvas.getContext('2d').getImageData(0,0,hw,hh).data;
+  const hdata=hdataIn||heightCanvas.getContext('2d').getImageData(0,0,hw,hh).data;
   for(let i=0;i<pos.count;i++){
     const nx=pos.getX(i), ny=pos.getY(i), nz=pos.getZ(i); const len=Math.hypot(nx,ny,nz)||1;
     const nxN=nx/len, nyN=ny/len, nzN=nz/len;
@@ -11087,29 +11087,45 @@ function createOffscreenGlobeRenderer(w,h){
   const camera=new THREE.PerspectiveCamera(45,w/h,0.1,4000); camera.position.set(0,0,260);
   scene.add(new THREE.AmbientLight(0xffffff,0.6));
   const sun=new THREE.DirectionalLight(0xfff2df,0.85); sun.position.set(3,2,4); scene.add(sun); globeApplyLight(sun);
-  return {renderer,scene,camera,lastKey:'',sphere:null,unknown:null};
+  return {renderer,scene,camera,lastKey:'',sphere:null,unknown:null,hdata:null,hw:0,hh:0,elevKey:'',applied:'',elevBuilds:0,applies:0,disposed:false};
 }
+/* 標高の画像の更新を表す印(いまの年代の標高タイルの識別子と、タイルの変更の番号) */
+function globeElevSig(w){ w=w||W(); let sid; try{ sid=currentStateId(); }catch(e){ return ''; } const R=resolveState(sid); if(!R) return ''; const a=[]; R.layers.elev.forEach((t,k)=>a.push(k+':'+arrId(t))); a.sort(); return sid+'|'+a.join(',')+'|'+Store.rev; }
 async function renderOffscreenGlobeFrame(off, w, h, angleY){
-  const wd=W(); const cfg=wd.geo3d;
-  const key=wd.currentYear+'|'+JSON.stringify(cfg)+'|'+JSON.stringify(MapView.activeLayers)+'|'+elevLightKey(wd)+'|wrap:'+(wrapOn(wd)?1:0);
+  const wd=W(); const cfg=wd.geo3d; const THREE=window.THREE;
+  const cfgC=JSON.stringify(Object.assign({},cfg,{elevExaggeration:0}));   /* 標高の強さは色の絵に関係しない(画面の鍵と同じ) */
+  const key=wd.currentYear+'|'+cfgC+'|'+JSON.stringify(MapView.activeLayers)+'|'+elevLightKey(wd)+'|wrap:'+(wrapOn(wd)?1:0)+'|'+wd.mapWidth+'|'+globeElevSig(wd);   /* 標高の画像の更新(描き換え)も鍵に含める */
   if(off.lastKey!==key){
     let cv=await buildMapTextureCanvas(Math.min(cfg.textureRes,2048));
     cv=reprojectMapToEquirect(cv, cfg); // 常に全球フレームへ変換
-    const THREE=window.THREE;
     disposeMesh(off.sphere); if(off.sphere) off.scene.remove(off.sphere);
     const tex=new THREE.CanvasTexture(cv); tex.needsUpdate=true; if(geoWrapOn(cfg,wd)) tex.wrapS=THREE.RepeatWrapping;
     const geo=fullSphereGeometry();
     off.sphere=new THREE.Mesh(geo, new THREE.MeshPhongMaterial({map:tex, shininess:6, transparent:true})); off.scene.add(off.sphere);
-    if(!off.unknown){ off.unknown=new THREE.Mesh(new THREE.SphereGeometry(99.4,48,32), new THREE.MeshPhongMaterial({color:0x11212c})); off.scene.add(off.unknown); }
+    off.applied='flat';   /* 作りたての球は平ら */
+    if(!off.unknown){ off.unknown=new THREE.Mesh(new THREE.SphereGeometry(99.4,64,48), new THREE.MeshPhongMaterial({color:0x11212c})); off.scene.add(off.unknown); }
     off.lastKey=key;
   }
+  /* 標高の凹凸(画面と同じ強さ。標高レイヤーがオフなら 0 = 平ら)。標高の画像は、同じ年代・同じ設定の間は作り直さない */
+  const sc=globeElevScale(wd);
+  if(sc){
+    const ek=globeElevSig(wd)+'|'+cfgC+'|'+(wrapOn(wd)?1:0);
+    if(off.elevKey!==ek||!off.hdata){
+      let ev=await buildElevTextureCanvas(Math.min(cfg.textureRes,2048)); const ev0=ev; ev=reprojectMapToEquirect(ev, cfg);
+      off.hw=ev.width; off.hh=ev.height; off.hdata=ev.getContext('2d').getImageData(0,0,ev.width,ev.height).data; off.elevKey=ek; off.elevBuilds++; off.applied='';
+      ev.width=ev.height=0; if(ev0!==ev) ev0.width=ev0.height=0;   /* 画素は off.hdata に持つので、キャンバスは手放す */
+    }
+  }
+  const ak=sc?(off.elevKey+'|'+sc):'flat';
+  if(off.applied!==ak){ applyElevationToGeometry(off.sphere.geometry, sc?{width:off.hw,height:off.hh}:null, sc, sc?off.hdata:null); off.applied=ak; off.applies++; }
   off.sphere.rotation.y=angleY||0; off.unknown.rotation.y=angleY||0;
   off.renderer.render(off.scene, off.camera);
   const out=document.createElement('canvas'); out.width=w; out.height=h;
   out.getContext('2d').drawImage(off.renderer.domElement,0,0);
   return out;
 }
-function disposeOffscreenGlobeRenderer(off){ disposeMesh(off.sphere); disposeMesh(off.unknown); off.renderer.dispose(); }
+/* 出力の終わり・途中の失敗のどちらでも呼ばれる(startTimelapseExport の finally)。形・標高の画素・描画器を手放す */
+function disposeOffscreenGlobeRenderer(off){ if(!off) return; disposeMesh(off.sphere); disposeMesh(off.unknown); off.sphere=null; off.unknown=null; off.hdata=null; off.elevKey=''; off.applied=''; off.disposed=true; try{ off.renderer.dispose(); }catch(e){} }
 
 /* ---------- フレーム列 → GIF / 動画 / ZIP ---------- */
 function frameDelayMs(fps){ return Math.round(1000/fps); }
