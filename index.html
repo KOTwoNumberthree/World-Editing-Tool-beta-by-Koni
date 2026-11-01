@@ -1491,6 +1491,7 @@ function uvNormLod(l){ const n=(v,d,lo)=>{ const x=uvNum(v,d); return x>=lo?x:d;
 async function uvBoot(){
   try{ const l=await uvKvGet('uvlod'); if(l&&typeof l==='object') UV.lod=uvNormLod(l); }catch(e){}
   try{ const h=await uvKvGet('uvhelp'); if(h===false) UV.help=false; }catch(e){}
+  try{ await msBoot(); }catch(e){}
   try{ await uvLegacyMigrate(); }catch(e){ console.error('universe legacy migrate',e); }
 }
 function uvShowMigNotice(){
@@ -4961,6 +4962,7 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
   const tx0=Math.max(0,Math.floor(rx0/TS)), ty0=Math.max(0,Math.floor(ry0/TS));
   const tx1=Math.min(Math.ceil(w.mapWidth/TS)-1,Math.floor(rx1/TS)), ty1=Math.min(Math.ceil(w.mapHeight/TS)-1,Math.floor(ry1/TS));
   const AL = view.activeLayers || MapView.activeLayers;
+  const MSA=(opts&&opts.std)?null:customStyleOf(w); MS.active=MSA;   /* v56: 利用者のスタイル(標準の6種類のときは null) */
   const mode=w.mapMode;
   const rasterT = ()=> ctx.setTransform(kx,0,0,ky,view.offX,view.offY);
   const smooth = kmin<2.5;
@@ -4970,7 +4972,7 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
   if(doR){
   ctx.save(); rasterT();
   const sty=(opts&&opts.std)?'standard':styleOf(w);   /* opts.std=true のときだけ標準(現在は使っていない) */
-  ctx.fillStyle=(sty==='parchment')?styleOpts(w).paper:(STYLE_BG[sty]||'#141a22'); ctx.fillRect(0,0,w.mapWidth,w.mapHeight);
+  ctx.fillStyle=MSA?MSA.base:((sty==='parchment')?styleOpts(w).paper:(STYLE_BG[sty]||'#141a22')); ctx.fillRect(0,0,w.mapWidth,w.mapHeight);
   ctx.beginPath(); ctx.rect(0,0,w.mapWidth,w.mapHeight); ctx.clip();
   ctx.imageSmoothingEnabled = smooth;
   const elt=elevLt(w);
@@ -4978,8 +4980,9 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
   if(AL.terrain){
     for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
       const k=tkey(tx,ty), t=R.layers.terrain.get(k);
-      if(!t){ if(sty==='parchment') ctx.drawImage(bakeTerrainStyled(PAPER_EMPTY,null,lod,'off',elt,{x:tx,y:ty,nb:()=>null},sty,w), tx*TS, ty*TS, TS+ovX, TS+ovY); continue; }
-      ctx.drawImage(bakeTerrainStyled(t, R.layers.elev.get(k)||null, lod, emode, elt, {x:tx,y:ty,nb:(dx,dy)=>R.layers.terrain.get(tkey(wrapTileX(tx+dx),ty+dy))}, sty, w), tx*TS, ty*TS, TS+ovX, TS+ovY);
+      if(!t){ if(MSA){ if(MSA.paper.grain!=='none'||MSA.paper.unevenness>0) ctx.drawImage(bakeTerrainCustom(PAPER_EMPTY,null,lod,'off',elt,{x:tx,y:ty,nb:()=>null},MSA,w), tx*TS, ty*TS, TS+ovX, TS+ovY); } else if(sty==='parchment') ctx.drawImage(bakeTerrainStyled(PAPER_EMPTY,null,lod,'off',elt,{x:tx,y:ty,nb:()=>null},sty,w), tx*TS, ty*TS, TS+ovX, TS+ovY); continue; }
+      if(MSA) ctx.drawImage(bakeTerrainCustom(t, R.layers.elev.get(k)||null, lod, emode, elt, {x:tx,y:ty,nb:(dx,dy)=>R.layers.terrain.get(tkey(wrapTileX(tx+dx),ty+dy))}, MSA, w), tx*TS, ty*TS, TS+ovX, TS+ovY);
+      else ctx.drawImage(bakeTerrainStyled(t, R.layers.elev.get(k)||null, lod, emode, elt, {x:tx,y:ty,nb:(dx,dy)=>R.layers.terrain.get(tkey(wrapTileX(tx+dx),ty+dy))}, sty, w), tx*TS, ty*TS, TS+ovX, TS+ovY);
     }
   } else if(emode!=='off'){
     for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
@@ -4989,6 +4992,7 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
   }
   if(typeof elevContourDraw==='function') elevContourDraw(ctx,R,w,lod,tx0,ty0,tx1,ty1,ovX,ovY,emode);   /* 等高線(標高から描画時に計算) */
   if(sty==='parchment'&&!(opts&&opts.nodeco)) parchmentDeco(ctx,w,kmin);   /* v40: 古地図風の飾り */
+  if(MSA) msOverlay(ctx,MSA,w.mapWidth,w.mapHeight,kx,ky,rx0,ry0,rx1,ry1,{nodeco:!!(opts&&opts.nodeco)});
   ctx.restore();
   }
 
@@ -5066,7 +5070,7 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
   // 線(河川・山脈・道路・鉄道・国境線)
   const lineOrder=['range','river','road','rail','border'];
   lineOrder.forEach(kind=>{
-    if(pass==='l'||!AL[kind]) return; const st=LINE_KINDS[kind];
+    if(pass==='l'||!AL[kind]) return; const st=msInk(kind,LINE_KINDS[kind]);
     ctx.strokeStyle=st.color; ctx.globalAlpha=st.alpha||1; ctx.lineWidth=st.width/S; ctx.setLineDash(st.dash.map(v=>v/S*1));
     R.lines.forEach(l=>{ if(l.kind!==kind||!l.points||l.points.length<2) return; const e=vecPath(l,'line'); if(!inView(e.bbox)) return;
       if(kind==='rail'){ ctx.setLineDash([]); ctx.strokeStyle='rgba(20,22,26,.85)'; ctx.lineWidth=(st.width+1.6)/S; ctx.stroke(e.path); ctx.strokeStyle=st.color; ctx.lineWidth=st.width/S; ctx.setLineDash(st.dash.map(v=>v/S)); }
@@ -5104,7 +5108,7 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
       if(zr<0.5 && tier==='city') return;
       drawPointSymbol(ctx,c,kind,tier,S);
       if(AL.labels && (tier==='capital'?zr>0.6:zr>1.9)){
-        ctx.fillStyle='#f0ead8'; ctx.strokeStyle='rgba(8,10,14,.85)'; ctx.lineWidth=2.6/S; ctx.font=tyFont('mapLabel',((tier==='capital'?12.5:11)/S)+'px','"Inter","Noto Sans JP",sans-serif');
+        ctx.fillStyle=msLab.fill('#f0ead8'); ctx.strokeStyle=msLab.stroke('rgba(8,10,14,.85)'); ctx.lineWidth=msLab.w(2.6)/S; ctx.font=tyFont('mapLabel',((tier==='capital'?12.5:11)/S)+'px','"Inter","Noto Sans JP",sans-serif');
         ctx.strokeText(c.name,c.x+7/S,c.y+4/S); ctx.fillText(c.name,c.x+7/S,c.y+4/S);
       }
     });
@@ -5124,8 +5128,8 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
       ctx.translate(pl.x, pl.y);
       if(pl.angleDeg) ctx.rotate(pl.angleDeg*Math.PI/180);
       ctx.font=tyFont('mapLabel',`600 ${pl.fontSize}px`,'"Spectral","Noto Serif JP",serif'); ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.lineWidth=3.2/S; ctx.strokeStyle='rgba(8,10,14,0.78)'; ctx.strokeText(pl.label,0,0);
-      ctx.fillStyle='#f6f1e4'; ctx.fillText(pl.label,0,0);
+      ctx.lineWidth=msLab.w(3.2)/S; ctx.strokeStyle=msLab.stroke('rgba(8,10,14,0.78)'); ctx.strokeText(pl.label,0,0);
+      ctx.fillStyle=msLab.fill('#f6f1e4'); ctx.fillText(pl.label,0,0);
       ctx.restore();
     });
     ctx.textAlign='left'; ctx.textBaseline='alphabetic';
@@ -5138,8 +5142,8 @@ function renderBaseImpl(ctx, cw, ch, view, opts){
     placements.forEach(pl=>{
       ctx.save(); ctx.translate(pl.x, pl.y);
       ctx.font=tyFont('mapLabel',`500 ${pl.fontSize}px`,'"Spectral","Noto Serif JP",serif'); ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.lineWidth=2.6/S; ctx.strokeStyle='rgba(8,10,14,0.7)'; ctx.strokeText(pl.label,0,0);
-      ctx.fillStyle=`rgba(247,240,220,${Math.max(0.6,0.95-pl.depth*0.08)})`; ctx.fillText(pl.label,0,0);
+      ctx.lineWidth=msLab.w(2.6)/S; ctx.strokeStyle=msLab.stroke('rgba(8,10,14,0.7)'); ctx.strokeText(pl.label,0,0);
+      ctx.fillStyle=MS.active?MS.active.label.color:`rgba(247,240,220,${Math.max(0.6,0.95-pl.depth*0.08)})`; ctx.fillText(pl.label,0,0);
       ctx.restore();
     });
     ctx.textAlign='left'; ctx.textBaseline='alphabetic';
@@ -10115,6 +10119,211 @@ const MONO_DEFAULT={land:'#d9d0ae', sea:'#35648f', lake:'#6fb0cf'};
 const MONO_KINDS=[['land','陸'],['sea','海'],['lake','湖']];
 const HEX6=/^#[0-9a-f]{6}$/i;
 function styleOf(w){ w=w||W(); const d=(w&&w.mapDisplay)||{}; return MAP_STYLES.some(s=>s[0]===d.style)?d.style:'standard'; }
+/* ===================== v56: 利用者のスタイル ===================== */
+const MS={ dev:[], loaded:false, edit:null, notes:[], active:null };
+const MS_FORMAT='atlas-mapstyle-v1';
+const MS_ENUMS={ grain:[['none','なし'],['weak','弱'],['mid','中'],['strong','強']], tex:[['none','なし'],['grain','粒'],['streak','筋'],['blotch','斑点']], sea:[['solid','ベタ(地形の色)'],['waves','波線'],['depth','深さで色が変わる(沖と岸)']], coast:[['none','なし'],['outline','輪郭線'],['glow','光の縁'],['fade','移り変わり']] };
+/* 項目の一覧(パス・型・範囲・既定)。正規化と編集画面は、この一覧だけから作る */
+const MS_FIELDS=[
+ {p:'base',t:'color',d:'#141a22',l:'背景の色',sec:'背景・紙'},
+ {p:'paper.grain',t:'enum',e:'grain',d:'none',l:'紙の質感',sec:'背景・紙'},
+ {p:'paper.unevenness',t:'num',lo:0,hi:1,st:0.05,d:0,l:'紙の色むら',sec:'背景・紙'},
+ {p:'texture.kind',t:'enum',e:'tex',d:'none',l:'地形の模様の種類',sec:'地形の模様'},
+ {p:'texture.strength',t:'num',lo:0,hi:1,st:0.05,d:0.3,l:'模様の強さ',sec:'地形の模様'},
+ {p:'texture.size',t:'num',lo:1,hi:200,st:1,d:6,l:'模様の大きさ(ピクセル)',u:'px',sec:'地形の模様'},
+ {p:'sea.mode',t:'enum',e:'sea',d:'solid',l:'海の描き方',sec:'海・海岸'},
+ {p:'sea.waveGap',t:'num',lo:2,hi:200,st:1,d:8,l:'波線の間隔(ピクセル)',u:'px',sec:'海・海岸'},
+ {p:'sea.waveColor',t:'color',d:'#ffffff',l:'波線の色',sec:'海・海岸'},
+ {p:'sea.offshore',t:'color',d:'#0f2a44',l:'沖の色',sec:'海・海岸'},
+ {p:'sea.shore',t:'color',d:'#3b86a8',l:'岸の色',sec:'海・海岸'},
+ {p:'sea.depthRange',t:'num',lo:2,hi:200,st:1,d:20,l:'岸から沖へ色が変わる距離(ピクセル)',u:'px',sec:'海・海岸'},
+ {p:'coast.mode',t:'enum',e:'coast',d:'none',l:'海岸の描き方',sec:'海・海岸'},
+ {p:'coast.width',t:'num',lo:0,hi:50,st:0.5,d:2,l:'海岸の幅・太さ(ピクセル)',u:'px',sec:'海・海岸'},
+ {p:'coast.color',t:'color',d:'#000000',l:'海岸の色',sec:'海・海岸'},
+ {p:'coast.strength',t:'num',lo:0,hi:1,st:0.05,d:0.8,l:'海岸の強さ(光の縁)',sec:'海・海岸'},
+ {p:'ink.borderColor',t:'color',d:'#d94a3a',l:'国境線(手描き)の色',sec:'線'},
+ {p:'ink.borderWidth',t:'num',lo:0.5,hi:20,st:0.1,d:1.9,l:'国境線の太さ',sec:'線'},
+ {p:'ink.roadColor',t:'color',d:'#d8b76e',l:'道路の色',sec:'線'},
+ {p:'ink.roadWidth',t:'num',lo:0.5,hi:20,st:0.1,d:1.6,l:'道路の太さ',sec:'線'},
+ {p:'ink.riverColor',t:'color',d:'#4a90bf',l:'河川の色',sec:'線'},
+ {p:'ink.riverWidth',t:'num',lo:0.5,hi:20,st:0.1,d:2.4,l:'河川の太さ',sec:'線'},
+ {p:'grid.on',t:'bool',d:false,l:'格子を表示',sec:'格子・周辺・装飾'},
+ {p:'grid.gap',t:'num',lo:8,hi:1000,st:1,d:64,l:'格子の間隔(ピクセル)',u:'px',sec:'格子・周辺・装飾'},
+ {p:'grid.color',t:'color',d:'#ffffff',l:'格子の色',sec:'格子・周辺・装飾'},
+ {p:'grid.opacity',t:'num',lo:0,hi:1,st:0.05,d:0.2,l:'格子の不透明度',sec:'格子・周辺・装飾'},
+ {p:'vignette.strength',t:'num',lo:0,hi:1,st:0.05,d:0,l:'周辺の減光',sec:'格子・周辺・装飾'},
+ {p:'decor.compass.on',t:'bool',d:false,l:'方位記号を表示',sec:'格子・周辺・装飾'},
+ {p:'decor.compass.size',t:'num',lo:20,hi:400,st:1,d:80,l:'方位記号の大きさ(ピクセル)',u:'px',sec:'格子・周辺・装飾'},
+ {p:'decor.frame.on',t:'bool',d:false,l:'縁の枠を表示',sec:'格子・周辺・装飾'},
+ {p:'decor.frame.color',t:'color',d:'#5a3e1b',l:'枠の色',sec:'格子・周辺・装飾'},
+ {p:'label.color',t:'color',d:'#f2ecd8',l:'文字の色',sec:'文字'},
+ {p:'label.strokeWidth',t:'num',lo:0,hi:20,st:0.5,d:3,l:'文字の縁取りの幅',sec:'文字'},
+ {p:'label.strokeColor',t:'color',d:'#080a0e',l:'文字の縁取りの色',sec:'文字'},
+ {p:'seed',t:'int',lo:0,hi:999999999,d:1,l:'模様の乱数の種',sec:'模様の種'}
+];
+const MS_HEX=/^#[0-9a-f]{6}$/i, MS_HEX3=/^#[0-9a-f]{3}$/i;
+const MS_BAD=/(https?:|ftp:|data:|javascript:|file:|function\s*\(|=>|eval\s*\(|<\s*(script|img|svg|iframe)|url\s*\(|on\w+\s*=|\/\/[a-z0-9.-]+\.[a-z])/i;
+const msGet=(o,p)=>{ if(p==='texture.size'){ const z=o&&o.texture&&o.texture.size; return (z&&typeof z==='object')?z.value:z; } return p.split('.').reduce((a,k)=>a==null?undefined:a[k],o); };
+function msSet(o,p,v){ if(p==='texture.size'){ if(!o.texture||typeof o.texture!=='object') o.texture={}; o.texture.size={value:v,unit:'px'}; return; } const a=p.split('.'); let c=o; for(let i=0;i<a.length-1;i++){ if(!c[a[i]]||typeof c[a[i]]!=='object') c[a[i]]={}; c=c[a[i]]; } c[a[a.length-1]]=v; }
+function msHash(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619)>>>0; } return h.toString(36); }
+/* 値の組を正規化する。範囲外・不正な値は近い値(不正なものは既定)に直し、理由を notes に入れる */
+function msNorm(raw,notes){
+  notes=notes||[]; const r=(raw&&typeof raw==='object'&&!Array.isArray(raw))?raw:{}; const S={};
+  const nm=typeof r.name==='string'?r.name.replace(/[\u0000-\u001f]/g,'').trim():''; S.name=nm.slice(0,60); if(nm.length>60) notes.push('名前: 60文字までに切り詰めました');
+  S.id=(typeof r.id==='string'&&/^u:[\w-]{1,60}$/.test(r.id))?r.id:'u:'+uid('ms');
+  MS_FIELDS.forEach(f=>{ const v=msGet(r,f.p); let o=f.d;
+    if(f.t==='color'){ if(typeof v==='string'&&MS_HEX.test(v)) o=v.toLowerCase(); else if(typeof v==='string'&&MS_HEX3.test(v)) o='#'+v.slice(1).split('').map(c=>c+c).join('').toLowerCase(); else if(v!==undefined){ notes.push(f.l+': 「'+String(v).slice(0,20)+'」は色(#rrggbb)ではないため、既定 '+f.d+' にしました'); } }
+    else if(f.t==='bool'){ o=(v===undefined)?f.d:v===true; if(v!==undefined&&typeof v!=='boolean') notes.push(f.l+': オン/オフではない値を、'+(o?'オン':'オフ')+' にしました'); }
+    else if(f.t==='enum'){ const ok=MS_ENUMS[f.e].some(x=>x[0]===v); if(ok) o=v; else if(v!==undefined) notes.push(f.l+': 選択肢にない値を、既定 '+f.d+' にしました'); }
+    else { let n=Number(v); if(v===undefined||v===null||v===''||!Number.isFinite(n)){ if(v!==undefined&&v!==null&&v!=='') notes.push(f.l+': 数ではない値を、既定 '+f.d+' にしました'); n=f.d; }
+      else { if(f.t==='int'&&!Number.isInteger(n)){ const m=Math.round(n); notes.push(f.l+': 整数にするため '+n+' → '+m); n=m; }
+        if(n<f.lo){ notes.push(f.l+': '+n+' は小さすぎるため '+f.lo+' にしました(範囲 '+f.lo+'〜'+f.hi+(f.u?f.u:'')+')'); n=f.lo; } else if(n>f.hi){ notes.push(f.l+': '+n+' は大きすぎるため '+f.hi+' にしました(範囲 '+f.lo+'〜'+f.hi+(f.u?f.u:'')+')'); n=f.hi; } }
+      o=n; }
+    msSet(S,f.p,o); });
+  S.terrain={}; const tr=(r.terrain&&typeof r.terrain==='object'&&!Array.isArray(r.terrain))?r.terrain:{}; Object.keys(tr).slice(0,300).forEach(k=>{ const v=tr[k]; if(typeof v==='string'&&MS_HEX.test(v)) S.terrain[String(k).slice(0,60)]=v.toLowerCase(); else notes.push('地形「'+String(k).slice(0,20)+'」の色: 色(#rrggbb)ではないため、上書きしません'); });
+  S.texture.per={}; const pr=(r.texture&&r.texture.per&&typeof r.texture.per==='object'&&!Array.isArray(r.texture.per))?r.texture.per:{}; Object.keys(pr).slice(0,300).forEach(k=>{ const q=pr[k]; if(!q||typeof q!=='object') return; const o={};
+    if(q.kind!==undefined){ if(MS_ENUMS.tex.some(x=>x[0]===q.kind)) o.kind=q.kind; else notes.push('地形「'+String(k).slice(0,20)+'」の模様の種類: 選択肢にない値は使いません'); }
+    if(q.strength!==undefined){ let n=Number(q.strength); if(!Number.isFinite(n)){ notes.push('地形「'+String(k).slice(0,20)+'」の模様の強さ: 数ではないため使いません'); } else { if(n<0||n>1){ notes.push('地形「'+String(k).slice(0,20)+'」の模様の強さ: '+n+' → '+(n<0?0:1)+'(範囲 0〜1)'); n=n<0?0:1; } o.strength=n; } }
+    if(q.size!==undefined){ let n=Number(q.size&&typeof q.size==='object'?q.size.value:q.size); if(!Number.isFinite(n)){ notes.push('地形「'+String(k).slice(0,20)+'」の模様の大きさ: 数ではないため使いません'); } else { if(n<1||n>200){ notes.push('地形「'+String(k).slice(0,20)+'」の模様の大きさ: '+n+' → '+(n<1?1:200)+'(範囲 1〜200px)'); n=n<1?1:200; } o.size=n; } }
+    if(Object.keys(o).length) S.texture.per[String(k).slice(0,60)]=o; });
+  return S;
+}
+/* 取り込むファイルの検査: 値以外(スクリプト・外部URL・画像の埋め込み・知らない項目)があれば、理由を返す */
+function msValidateImport(j){
+  if(!j||typeof j!=='object'||Array.isArray(j)) return '形式が違います(atlas-mapstyle-v1 のファイルではありません)';
+  if(j.format!==MS_FORMAT) return '形式名が '+MS_FORMAT+' ではありません';
+  if(!Array.isArray(j.styles)||!j.styles.length) return 'スタイルが含まれていません'; if(j.styles.length>200) return 'スタイルが多すぎます(200個まで)';
+  const known=new Set(['name','id','terrain','texture','paper','sea','coast','ink','grid','vignette','decor','label','seed','base']);
+  let bad=''; const walk=(v,path,depth)=>{ if(bad) return; if(depth>6){ bad='入れ子が深すぎます'; return; }
+    if(v===null||typeof v==='boolean'||typeof v==='number') return;
+    if(typeof v==='string'){ if(v.length>200){ bad=path+': 文字列が長すぎます'; return; } if(MS_BAD.test(v)){ bad=path+': スクリプト・外部URL・画像の埋め込みなど、値以外のものが含まれています'; } return; }
+    if(Array.isArray(v)){ bad=path+': 配列は使えません'; return; }
+    if(typeof v==='object'){ Object.keys(v).forEach(k=>{ if(bad) return; if(MS_BAD.test(k)||k.length>80){ bad=path+'.'+k.slice(0,20)+': 項目名が不正です'; return; } walk(v[k],path+'.'+k,depth+1); }); return; }
+    bad=path+': 値以外のもの(関数など)が含まれています'; };
+  for(let i=0;i<j.styles.length&&!bad;i++){ const s=j.styles[i]; if(!s||typeof s!=='object'||Array.isArray(s)){ bad='スタイル'+(i+1)+': 形が違います'; break; } const unk=Object.keys(s).filter(k=>!known.has(k)); if(unk.length){ bad='スタイル'+(i+1)+': 知らない項目「'+unk[0].slice(0,20)+'」が含まれています(値以外のものを含むファイルは取り込めません)'; break; } walk(s,'スタイル'+(i+1),0); }
+  const top=Object.keys(j).filter(k=>k!=='format'&&k!=='styles'); if(!bad&&top.length) bad='知らない項目「'+top[0].slice(0,20)+'」が含まれています';
+  return bad;
+}
+/* 名前の重複は番号で区別する */
+function msUniqueName(name,list,selfId){ let base=(name||'').trim()||'新しいスタイル', n=base, i=2; const names=new Set(list.filter(s=>typeof s==='string'||s.id!==selfId).map(s=>typeof s==='string'?s:s.name)); MS_BUILTIN.forEach(b=>names.add(b.name)); while(names.has(n)){ n=base+' ('+(i++)+')'; } return n; }
+/* 標準の6種類(値の組で表す。描画は従来の処理のまま画素まで同じ。削除・上書きはできず、複製して編集する) */
+const MS_BUILTIN=(()=>{ const mk=(id,name,o)=>{ const S=msNorm(Object.assign({id:'u:builtin'},o),[]); S.id=id; S.name=name; S.builtin=true; return S; };
+  return [
+    mk('standard','標準',{base:'#141a22'}),
+    mk('parchment','古地図風',{base:'#e9dcb8',paper:{grain:'mid',unevenness:0.5},texture:{kind:'grain',strength:0.3,size:{value:3}},sea:{mode:'waves',waveGap:6,waveColor:'#6b7f8a'},coast:{mode:'outline',width:1,color:'#3a2a1a'},decor:{compass:{on:true,size:90},frame:{on:true,color:'#5a3e1b'}},label:{color:'#3a2a1a',strokeWidth:2,strokeColor:'#e9dcb8'},seed:20260}),
+    mk('modern','現代風',{base:'#eef0f2',sea:{mode:'solid'},coast:{mode:'outline',width:1,color:'#78aad7'},label:{color:'#202428',strokeWidth:3,strokeColor:'#ffffff'}}),
+    mk('digital','デジタル風',{base:'#05070f',coast:{mode:'glow',width:3,color:'#00ebff',strength:0.9},grid:{on:true,gap:32,color:'#00c8ff',opacity:0.14},label:{color:'#bff6ff'}}),
+    mk('satellite','衛星風',{base:'#141a22',texture:{kind:'blotch',strength:0.5,size:{value:14}},sea:{mode:'depth',offshore:'#12344f',shore:'#2a7f90',depthRange:24},coast:{mode:'fade',width:4},seed:1}),
+    mk('mono','単色(陸・海・湖)',{base:'#141a22'})
+  ]; })();
+const msIsCustomId=(id)=>typeof id==='string'&&/^u:[\w-]{1,60}$/.test(id);
+/* 使えるスタイルの一覧: 標準の6種類 + この世界に保存したもの + この端末に保存したもの */
+function msAll(w){ w=w||W(); const d=(w&&w.mapDisplay)||{}; const wl=Array.isArray(d.styles)?d.styles.filter(s=>s&&msIsCustomId(s.id)).map(s=>Object.assign(msNorm(s,[]),{store:'world'})):[]; const ids=new Set(wl.map(s=>s.id)); const dv=MS.dev.filter(s=>!ids.has(s.id)).map(s=>Object.assign({},s,{store:'device'})); return MS_BUILTIN.map(s=>Object.assign({},s,{store:'builtin'})).concat(wl,dv); }
+const MS_CACHE=new WeakMap();
+function msKeyOf(S){ return S?('u'+msHash(JSON.stringify([S.base,S.paper,S.terrain,S.texture,S.sea,S.coast,S.ink,S.grid,S.vignette,S.decor,S.label,S.seed]))):''; }
+/* いま開いている世界で使うスタイル(利用者のスタイルのときだけ。標準の6種類のときは null) */
+function customStyleOf(w){ w=w||W(); const d=(w&&w.mapDisplay)||{}; if(!msIsCustomId(d.style)) return null; const s=msAll(w).find(x=>x.id===d.style); return s&&!s.builtin?s:null; }
+function msInk(kind,st){ const S=MS.active; if(!S) return st; if(kind==='border') return Object.assign({},st,{color:S.ink.borderColor,width:S.ink.borderWidth}); if(kind==='road') return Object.assign({},st,{color:S.ink.roadColor,width:S.ink.roadWidth}); if(kind==='river') return Object.assign({},st,{color:S.ink.riverColor,width:S.ink.riverWidth}); return st; }
+const msLab={ fill:(d)=>MS.active?MS.active.label.color:d, stroke:(d)=>MS.active?MS.active.label.strokeColor:d, w:(d)=>MS.active?MS.active.label.strokeWidth*(d/3):d };
+/* ===== v56: 保存(この端末/この世界)・管理画面・編集画面・書き出し/読み込み ===== */
+async function msBoot(){ try{ const a=await uvKvGet('mapstyles'); if(Array.isArray(a)){ MS.dev=a.slice(0,200).map(s=>msNorm(s,[])); } }catch(e){ console.warn('mapstyle boot',e); } MS.loaded=true; }
+function msSaveDev(){ return uvKvPut('mapstyles',MS.dev.map(s=>{ const o=Object.assign({},s); delete o.store; delete o.builtin; return o; })); }
+function msCanEdit(){ const w=W(); return !!w&&!w.readOnly&&(typeof roleHasPerm!=='function'||roleHasPerm('display')); }
+function msRefresh(){ try{ MapView.baseDirty=true; }catch(e){} try{ renderMapLayerPanel(); }catch(e){} try{ renderMap(); }catch(e){} }
+function msPlain(S){ const o=JSON.parse(JSON.stringify(S)); delete o.store; delete o.builtin; return o; }
+function msExportObj(list){ return {format:MS_FORMAT,styles:list.map(s=>{ const o=msPlain(s); delete o.id; return o; })}; }
+function msNames(w,exceptId){ return msAll(w).filter(s=>s.id!==exceptId).map(s=>s.name); }
+/* 保存。store: 'device'(この端末の設定) / 'world'(この世界の表示設定)。戻り値: 保存できたか */
+function msCommit(S,store,summary){
+  const w=W(); if(!w||!msCanEdit()){ toast('表示設定を変える権限がありません','err'); return false; }
+  S=msNorm(S,[]); S.name=msUniqueName(S.name||'新しいスタイル',msNames(w,S.id));
+  delete S.builtin; delete S.store;
+  const wasWorld=Array.isArray((w.mapDisplay||{}).styles)&&w.mapDisplay.styles.some(x=>x&&x.id===S.id), wasDev=MS.dev.some(x=>x.id===S.id);
+  if(store==='world'){ const ok=mapStyleMutate(summary||'地図の表示スタイル(この世界に保存)',(d)=>{ const a=Array.isArray(d.styles)?d.styles.slice():[]; const i=a.findIndex(x=>x&&x.id===S.id); if(i>=0) a[i]=msPlain(S); else a.push(msPlain(S)); d.styles=a; }); if(!ok) return false;
+    if(wasDev){ MS.dev=MS.dev.filter(x=>x.id!==S.id); msSaveDev(); } }
+  else { if(wasWorld){ const ok=mapStyleMutate('地図の表示スタイル(この端末へ移動)',(d)=>{ d.styles=(d.styles||[]).filter(x=>!x||x.id!==S.id); }); if(!ok) return false; }
+    const i=MS.dev.findIndex(x=>x.id===S.id); if(i>=0) MS.dev[i]=S; else MS.dev.push(S); msSaveDev(); msRefresh(); }
+  return S;
+}
+function msDelete(id){ const w=W(); if(!w||!msCanEdit()||!msIsCustomId(id)) return false;
+  const inWorld=Array.isArray((w.mapDisplay||{}).styles)&&w.mapDisplay.styles.some(x=>x&&x.id===id);
+  if(inWorld||(w.mapDisplay&&w.mapDisplay.style===id)){ const ok=mapStyleMutate('地図の表示スタイルを削除',(d)=>{ d.styles=(d.styles||[]).filter(x=>!x||x.id!==id); if(d.style===id) d.style='standard'; }); if(!ok) return false; }
+  if(MS.dev.some(x=>x.id===id)){ MS.dev=MS.dev.filter(x=>x.id!==id); msSaveDev(); }
+  msRefresh(); return true; }
+function msUse(id){ if(!msCanEdit()) return false; return mapStyleMutate('地図の表示スタイル',(d)=>{ d.style=id; }); }
+function msNewFrom(baseId){ const b=MS_BUILTIN.find(s=>s.id===baseId)||MS_BUILTIN[0]; const S=JSON.parse(JSON.stringify(b)); delete S.builtin; S.id='u:'+uid('ms'); S.name=msUniqueName((b.name||'標準')+'(自分用)',msNames(W())); return S; }
+function msImportText(text,store){
+  let j; try{ j=JSON.parse(text); }catch(e){ return {ok:false,reason:'JSONとして読めません'}; }
+  const bad=msValidateImport(j); if(bad) return {ok:false,reason:bad};
+  const notes=[], added=[]; for(const raw of j.styles){ const S=msNorm(Object.assign({},raw,{id:undefined}),notes); S.name=msUniqueName(S.name||'取り込んだスタイル',msNames(W()).concat(added.map(a=>a.name))); const r=msCommit(S,store||'device','地図の表示スタイルを取り込む'); if(!r) return {ok:false,reason:'保存できませんでした(権限・読み取り専用)'}; added.push(r); }
+  return {ok:true,count:added.length,notes}; }
+/* ---- 見本の地図(利用者のデータとは無関係。編集画面のプレビュー専用) ---- */
+let MS_SAMPLE=null;
+function msSample(w){ const SP=stylePal(w), P=Pal.terrain; const sea=[],lake=[],land=[]; (w.terrainTypes||[]).forEach(t=>{ if(!t.rid||t.rid>255||!P.has[t.rid]) return; const k=SP.kind[t.rid]; (k===1?sea:k===2?lake:land).push(t.rid); });
+  const key=[sea[0],lake[0],land.join(',')].join('|'); if(MS_SAMPLE&&MS_SAMPLE.key===key) return MS_SAMPLE;
+  const tile=new Uint8Array(65536), elev=new Uint8Array(65536), sr=sea[0]||0, lr=lake[0]||sr; const L=land.length?land:[0];
+  for(let y=0;y<256;y++) for(let x=0;x<256;x++){ const dx=(x-120)/92, dy=(y-128)/78, rr=dx*dx+dy*dy+0.08*Math.sin(x/9)+0.06*Math.cos(y/7); let v=sr, el=0;
+    if(rr<1){ const ang=Math.atan2(y-128,x-120), idx=Math.floor(((ang+Math.PI)/(2*Math.PI))*L.length+((rr>0.55)?0:0.5))%L.length; v=L[idx]||sr; el=Math.max(0,Math.round(180*(1-rr))); }
+    const lx=(x-110)/18, ly=(y-120)/12; if(lx*lx+ly*ly<1&&rr<0.8){ v=lr; el=0; }
+    const ix=(x-228)/12, iy=(y-40)/10; if(ix*ix+iy*iy<1){ v=L[0]||sr; el=60; }
+    if(x>=244){ v=0; el=0; }   /* 右端の細い帯は何も描かない(背景の色の確認用) */
+    tile[(y<<8)|x]=v; elev[(y<<8)|x]=el; }
+  MS_SAMPLE={key,tile,elev}; return MS_SAMPLE; }
+function msPaintPreview(cv,S){ const w=W(); if(!cv||!w) return; const sm=msSample(w); const c=bakeTerrainCustom(sm.tile,sm.elev,0,'shade',null,{x:0,y:0,nb:()=>null},S,Object.assign({},w,{mapWidth:256,mapHeight:256})); const ctx=cv.getContext('2d'); cv.width=256; cv.height=256; ctx.clearRect(0,0,256,256); ctx.drawImage(c,0,0); const prev=MS.active; MS.active=S; msOverlay(ctx,S,256,256,1,1,0,0,256,256,{}); MS.active=prev;
+  ctx.save(); ctx.font='12px sans-serif'; ctx.fillStyle=S.label.color; ctx.strokeStyle=S.label.strokeColor; ctx.lineWidth=Math.min(6,S.label.strokeWidth); ctx.lineJoin='round'; ctx.strokeText('見本の町',80,125); ctx.fillText('見本の町',80,125); ctx.restore();
+  ctx.save(); ctx.strokeStyle=S.ink.riverColor; ctx.lineWidth=S.ink.riverWidth; ctx.beginPath(); ctx.moveTo(60,110); ctx.bezierCurveTo(90,140,110,100,140,150); ctx.stroke(); ctx.strokeStyle=S.ink.roadColor; ctx.lineWidth=S.ink.roadWidth; ctx.beginPath(); ctx.moveTo(70,170); ctx.lineTo(150,90); ctx.stroke(); ctx.strokeStyle=S.ink.borderColor; ctx.lineWidth=S.ink.borderWidth; ctx.beginPath(); ctx.moveTo(130,60); ctx.lineTo(130,200); ctx.stroke(); ctx.restore(); }
+/* ---- 編集画面 ---- */
+function msEdFieldHtml(f,S){ const v=msGet(S,f.p), id='msf-'+f.p.replace(/\./g,'-');
+  if(f.t==='color') return `<div class="lp-row"><span>${esc(f.l)}</span><input type="color" data-msf="${f.p}" value="${esc(v)}"></div>`;
+  if(f.t==='bool') return `<div class="lp-row"><label class="lp-chk"><input type="checkbox" data-msf="${f.p}" ${v?'checked':''}> ${esc(f.l)}</label></div>`;
+  if(f.t==='enum') return `<div class="lp-row"><span>${esc(f.l)}</span><select data-msf="${f.p}">${MS_ENUMS[f.e].map(([k,n])=>`<option value="${k}" ${v===k?'selected':''}>${n}</option>`).join('')}</select></div>`;
+  const rg=`min="${f.lo}" max="${f.hi}" step="${f.st||1}"`; return `<div class="lp-row"><span>${esc(f.l)}</span><input type="range" data-msf="${f.p}" data-msr="1" ${rg} value="${v}" style="flex:1;min-width:80px;"><input type="number" data-msf="${f.p}" data-msn="1" ${rg} value="${v}" style="width:84px;">${f.u?`<span class="lp-note">${f.u}</span>`:''}</div>`; }
+function msEdHtml(E){ const w=W(), S=E.cur; let secs=[], last=''; MS_FIELDS.forEach(f=>{ if(f.sec!==last){ if(last) secs.push('</fieldset>'); secs.push(`<fieldset style="margin:6px 0;border:1px solid var(--border,#445);border-radius:6px;"><legend>${esc(f.sec)}</legend>`); last=f.sec; } secs.push(msEdFieldHtml(f,S)); }); secs.push('</fieldset>');
+  const tt=(w.terrainTypes||[]).filter(t=>t.rid&&t.rid<256).map(t=>{ const o=S.terrain[t.id], per=S.texture.per[t.id]||{}; return `<tr><td>${esc(t.name)}</td><td><input type="checkbox" data-mst="${esc(t.id)}|on" ${o?'checked':''}><input type="color" data-mst="${esc(t.id)}|color" value="${esc(o||(HEX6.test(t.color)?t.color:'#808080'))}"></td><td><select data-mst="${esc(t.id)}|kind"><option value="">全体と同じ</option>${MS_ENUMS.tex.map(([k,n])=>`<option value="${k}" ${per.kind===k?'selected':''}>${n}</option>`).join('')}</select></td></tr>`; }).join('');
+  return `<div style="display:flex;gap:12px;flex-wrap:wrap;"><div style="flex:0 0 auto;"><canvas id="msPrev" width="256" height="256" style="width:256px;height:256px;border:1px solid #556;"></canvas><div class="lp-note">見本の地図です(あなたの地図のデータは使いません)。</div>
+    <div style="margin-top:6px;"><button class="btn small" id="msUndo">元に戻す</button> <button class="btn small" id="msRedo">やり直す</button></div></div>
+    <div style="flex:1;min-width:260px;max-height:60vh;overflow:auto;"><div class="lp-row"><span>名前</span><input type="text" data-msf="name" maxlength="60" value="${esc(S.name)}" style="flex:1;"></div>
+    <div class="lp-row"><span>保存先</span><select id="msStore"><option value="device" ${E.store==='device'?'selected':''}>この端末の設定(既定)</option><option value="world" ${E.store==='world'?'selected':''}>この世界に保存する</option></select></div>
+    ${secs.join('')}<fieldset style="margin:6px 0;border:1px solid var(--border,#445);border-radius:6px;"><legend>地形ごとの色・模様</legend><table class="tbl" style="width:100%;"><tr><th>地形</th><th>色の上書き</th><th>模様</th></tr>${tt}</table></fieldset>
+    <div id="msNotes" class="lp-note" style="color:var(--danger,#e66);"></div></div></div>`; }
+function msEdSync(){ const E=MS.edit; if(!E) return; const S=E.cur;
+  document.querySelectorAll('#modalBody [data-msf]').forEach(el=>{ const f=el.dataset.msf; const v=f==='name'?S.name:msGet(S,f); if(el.type==='checkbox') el.checked=!!v; else if(document.activeElement!==el||el.dataset.msn===undefined) el.value=v; });
+  document.querySelectorAll('#modalBody [data-mst]').forEach(el=>{ const [id,k]=el.dataset.mst.split('|'); const o=S.terrain[id], per=S.texture.per[id]||{}; if(k==='on') el.checked=!!o; else if(k==='color'&&o) el.value=o; else if(k==='kind') el.value=per.kind||''; });
+  const n=document.getElementById('msNotes'); if(n) n.textContent=E.notes.join(' / ');
+  msPaintPreview(document.getElementById('msPrev'),S);
+  const u=document.getElementById('msUndo'), r=document.getElementById('msRedo'); if(u) u.disabled=!E.undo.length; if(r) r.disabled=!E.redo.length; }
+function msEdApply(fn,snap){ const E=MS.edit; if(!E) return; const prev=JSON.stringify(E.cur); const draft=JSON.parse(prev); fn(draft); const notes=[]; E.cur=msNorm(draft,notes); E.cur.id=E.orig.id; E.notes=notes; if(snap&&E.snap!==JSON.stringify(E.cur)){ E.undo.push(E.snap); E.redo=[]; E.snap=JSON.stringify(E.cur); } msEdSync(); }
+function msEdit(S,isNew,store){ if(!msCanEdit()){ toast('表示設定を変える権限がありません','err'); return; }
+  S=msNorm(S,[]); const E=MS.edit={orig:S,cur:JSON.parse(JSON.stringify(S)),undo:[],redo:[],notes:[],isNew:!!isNew,store:store||'device'}; E.snap=JSON.stringify(E.cur);
+  openModal(isNew?'表示スタイルを作る':'表示スタイルを編集',msEdHtml(E),[{label:'キャンセル',onClick:()=>{ MS.edit=null; closeModal(); try{ msManage(); }catch(e){} }},{label:'編集を確定',cls:'primary',onClick:()=>{ const r=msCommit(E.cur,E.store,isNew?'表示スタイルを作る':'表示スタイルを編集'); if(!r) return; MS.edit=null; closeModal(); toast('スタイル「'+r.name+'」を保存しました'); msRefresh(); }}]); msEdSync(); }
+document.addEventListener('input',(ev)=>{ const t=ev.target; if(!MS.edit||!t||!t.dataset) return; if(t.dataset.msf!==undefined&&(t.type==='range'||t.type==='color')){ const f=t.dataset.msf; const v=t.type==='range'?Number(t.value):t.value; msEdApply((d)=>{ msSet(d,f,v); },false); } });
+document.addEventListener('change',(ev)=>{ const t=ev.target; if(!MS.edit||!t||!t.dataset) return;
+  if(t.dataset.msf!==undefined){ const f=t.dataset.msf; let v=t.type==='checkbox'?t.checked:(t.type==='range'||t.type==='number')?Number(t.value):t.value; const fd=MS_FIELDS.find(x=>x.p===f); const before=JSON.stringify(MS.edit.cur);
+    msEdApply((d)=>{ if(f==='name') d.name=String(v); else msSet(d,f,v); },true); if(fd&&fd.t==='num'&&!Number.isNaN(v)&&(v<fd.lo||v>fd.hi)) { MS.edit.notes.push(fd.l+': '+v+' は範囲('+fd.lo+'〜'+fd.hi+')の外のため、範囲内に直しました'); msEdSync(); } }
+  else if(t.dataset.mst!==undefined){ const [id,k]=t.dataset.mst.split('|'); msEdApply((d)=>{ d.terrain=d.terrain||{}; d.texture=d.texture||{}; d.texture.per=d.texture.per||{};
+      if(k==='on'){ if(t.checked){ const c=document.querySelector('[data-mst="'+id+'|color"]'); d.terrain[id]=c?c.value:'#808080'; } else delete d.terrain[id]; }
+      else if(k==='color'){ d.terrain[id]=t.value; }
+      else if(k==='kind'){ if(t.value){ d.texture.per[id]=Object.assign({},d.texture.per[id],{kind:t.value}); } else delete d.texture.per[id]; } },true); }
+  else if(t.id==='msStore'){ MS.edit.store=t.value==='world'?'world':'device'; } });
+document.addEventListener('click',(ev)=>{ const t=ev.target&&ev.target.closest?ev.target.closest('#msUndo,#msRedo'):null; if(!t||!MS.edit||t.disabled) return; const E=MS.edit;
+  if(t.id==='msUndo'&&E.undo.length){ E.redo.push(E.snap); E.snap=E.undo.pop(); E.cur=JSON.parse(E.snap); E.notes=[]; msEdSync(); }
+  else if(t.id==='msRedo'&&E.redo.length){ E.undo.push(E.snap); E.snap=E.redo.pop(); E.cur=JSON.parse(E.snap); E.notes=[]; msEdSync(); } });
+/* ---- 管理画面 ---- */
+function msManage(msg){ const w=W(); if(!w) return; const can=msCanEdit(), dis=can?'':'disabled'; const all=msAll(w), cur=(w.mapDisplay||{}).style||'standard';
+  const rows=all.map(s=>`<tr data-msid="${esc(s.id)}"><td>${esc(s.name)}${s.id===cur?' <b>(使用中)</b>':''}</td><td>${s.builtin?'標準(変更不可)':s.store==='world'?'この世界':'この端末'}</td><td>${s.builtin?'':`<button class="btn small" data-msa="use" ${dis}>使う</button> <button class="btn small" data-msa="edit" ${dis}>編集</button> <button class="btn small" data-msa="rename" ${dis}>名前変更</button> <button class="btn small" data-msa="delete" ${dis}>削除</button> `}<button class="btn small" data-msa="dup" ${dis}>複製</button> <button class="btn small" data-msa="export">書き出し</button></td></tr>`).join('');
+  openModal('表示スタイルの管理',`<p class="lp-note">表示だけを変えます。地形・国家・都市のデータは変わりません。</p><table class="tbl" style="width:100%;"><tr><th>名前</th><th>保存先</th><th>操作</th></tr>${rows}</table>
+   <div class="lp-row" style="margin-top:8px;"><span>新しく作る(元にする標準)</span><select id="msNewBase">${MS_BUILTIN.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><button class="btn small" id="msNew" ${dis}>新規作成…</button></div>
+   <div class="lp-row"><span>ファイルから取り込む(.json)</span><input type="file" id="msImpFile" accept=".json,application/json" ${dis}></div><div id="msMgrMsg" class="lp-note">${esc(msg||'')}</div>`,[{label:'閉じる',onClick:closeModal}]); }
+document.addEventListener('click',(ev)=>{ const el=ev.target&&ev.target.closest?ev.target.closest('[data-msa],#msNew'):null; if(!el||el.disabled) return; const w=W(); if(!w) return;
+  if(el.id==='msNew'){ const b=document.getElementById('msNewBase').value; msEdit(msNewFrom(b),true,'device'); return; }
+  const tr=el.closest('tr'), id=tr&&tr.dataset.msid, S=msAll(w).find(x=>x.id===id); if(!S) return; const a=el.dataset.msa;
+  if(a==='use'){ if(msUse(id)) msManage(); }
+  else if(a==='edit'){ msEdit(S,false,S.store==='world'?'world':'device'); }
+  else if(a==='dup'){ const N=JSON.parse(JSON.stringify(S)); delete N.builtin; N.id='u:'+uid('ms'); N.name=msUniqueName(S.name+'(コピー)',msNames(w)); const r=msCommit(N,S.store==='world'?'world':'device','表示スタイルを複製'); if(r) msManage('「'+r.name+'」を作りました'); }
+  else if(a==='rename'){ openModal('名前を変える','<div class="lp-row"><input type="text" id="msRen" maxlength="60" style="flex:1;" value="'+esc(S.name)+'"></div>',[{label:'キャンセル',onClick:()=>msManage()},{label:'変更する',cls:'primary',onClick:()=>{ const nn=(document.getElementById('msRen').value||'').trim(); if(!nn){ toast('名前を入れてください','err'); return; } const N=JSON.parse(JSON.stringify(S)); N.name=nn; const r=msCommit(N,S.store==='world'?'world':'device','表示スタイルの名前変更'); if(r) msManage(); }}]); }
+  else if(a==='delete'){ openModal('確認','<p>スタイル「'+esc(S.name)+'」を削除します。これを使っている地図は「標準」に戻ります。よろしいですか?</p>',[{label:'キャンセル',onClick:()=>msManage()},{label:'削除する',cls:'danger',onClick:()=>{ msDelete(id); msManage('削除しました'); }}]); }
+  else if(a==='export'){ const o=msExportObj([S]); downloadBlob(new Blob([JSON.stringify(o,null,1)],{type:'application/json'}),'mapstyle-'+(S.name||'style').replace(/[^\w\u3040-\u30ff\u4e00-\u9fff-]+/g,'_')+'.json'); } });
+document.addEventListener('change',(ev)=>{ const t=ev.target; if(!t||t.id!=='msImpFile'||!t.files||!t.files[0]) return; const f=t.files[0]; const rd=new FileReader(); rd.onload=()=>{ const r=msImportText(String(rd.result||''),'device'); if(!r.ok){ msManage('取り込めません: '+r.reason); return; } msManage(r.count+'個のスタイルを取り込みました'+(r.notes.length?'(範囲外の値を直しました: '+r.notes.slice(0,5).join(' / ')+')':'')); }; rd.onerror=()=>msManage('ファイルを読めませんでした'); rd.readAsText(f); });
 function monoOf(w){ w=w||W(); const m=(w&&w.mapDisplay&&w.mapDisplay.mono)||{}; const o={}; MONO_KINDS.forEach(([k])=>{ o[k]=(typeof m[k]==='string'&&HEX6.test(m[k]))?m[k].toLowerCase():''; }); return o; }
 function satSeedDefault(w){ const s=String((w&&(w.id||w.name))||'atlas'); let h=2166136261; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return (h>>>0)%1000000; }
 const PAPER_DEFAULT='#e9dcb8', WAVE_GAPS=[4,6,8,10,12,16], STRENGTHS=[['weak','弱'],['mid','中'],['strong','強']];
@@ -10225,6 +10434,78 @@ function bakeTerrainStyled(tile, elevTile, lod, emode, lt, org, style, w){
    ・設定(w.mapDisplay): satSeed / satStrength('weak'|'mid'|'strong') / satClouds /
        parSeed / parPaint(紙の色) / parBurn / parDeco / parWave(波線の間隔px)
    ========================================================= */
+/* ===== v56: 利用者のスタイルの描画(スタイルの値の組に従う。スタイルの名前では処理を分けない) ===== */
+Bake.custom=new WeakMap();
+function bakeTerrainCustom(tile, elevTile, lod, emode, lt, org, S, w){
+  w=w||W(); const P=Pal.terrain, SP=stylePal(w); emode=emode||'shade'; if(emode==='off') elevTile=null;
+  const needNb=(S.sea.mode==='depth'||S.coast.mode!=='none');
+  const T9=[]; let nbSig=''; for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ const a=(dx===0&&dy===0)?tile:((needNb&&org&&org.nb)?(org.nb(dx,dy)||null):null); T9.push(a); if(needNb&&!(dx===0&&dy===0)) nbSig+=arrId(a)+','; }
+  const key=[msKeyOf(S),SP.ver,P.ver,emode,ltKey(lt),arrId(elevTile),nbSig,w.mapWidth,w.mapHeight].join('|');
+  let e=Bake.custom.get(tile); if(!e||e.key!==key){ e={key,lods:{}}; Bake.custom.set(tile,e); }
+  const ck=lod+'@'+org.x+','+org.y; if(e.lods[ck]) return e.lods[ck];
+  const shadeFn=elevShadeFn(lt), ox=org.x*TS, oy=org.y*TS, s=1<<lod, n=TS>>lod, c=newTileCanvas(n), ctx=c.getContext('2d'), img=ctx.createImageData(n,n), d=img.data;
+  const kind=SP.kind, cat=P.cat, has=P.has, plut=P.lut, W_=w.mapWidth, H_=w.mapHeight, sd=S.seed|0;
+  const at=(X,Y)=>{ let cx=1,cy=1; if(X<0){cx=0;X+=256;} else if(X>=256){cx=2;X-=256;} if(Y<0){cy=0;Y+=256;} else if(Y>=256){cy=2;Y-=256;} if(X<0||X>=256||Y<0||Y>=256) return 0; const tt=T9[cy*3+cx]; return tt?tt[(Y<<8)|X]:0; };
+  /* 地形ごとの色と模様(利用者の上書き → なければ、地形の登録の色・全体の模様) */
+  const lut=new Uint8Array(768), tk=new Uint8Array(256), ts=new Float32Array(256), tz=new Float32Array(256); const KM={none:0,grain:1,streak:2,blotch:3};
+  for(let rid=1;rid<256;rid++){ lut[rid*3]=plut[rid*3]; lut[rid*3+1]=plut[rid*3+1]; lut[rid*3+2]=plut[rid*3+2]; tk[rid]=KM[S.texture.kind]; ts[rid]=S.texture.strength; tz[rid]=S.texture.size.value; }
+  (w.terrainTypes||[]).forEach(t=>{ if(t.rid>255||t.rid<1) return; const o=S.terrain[t.id]; if(o){ const q=hexToRgb(o); lut[t.rid*3]=q[0]; lut[t.rid*3+1]=q[1]; lut[t.rid*3+2]=q[2]; } const q=S.texture.per[t.id]; if(q){ if(q.kind!==undefined) tk[t.rid]=KM[q.kind]; if(q.strength!==undefined) ts[t.rid]=q.strength; if(q.size!==undefined) tz[t.rid]=q.size; } });
+  const bc=hexToRgb(S.base), wvc=hexToRgb(S.sea.waveColor), offc=hexToRgb(S.sea.offshore), shc=hexToRgb(S.sea.shore), cc=hexToRgb(S.coast.color);
+  /* 海岸までの距離(隣のタイルも含めた窓の中で、チャンファー距離変換) */
+  const need=Math.max(S.coast.mode!=='none'?S.coast.width:0,S.sea.mode==='depth'?S.sea.depthRange:0), Rs=needNb?Math.min(24,Math.ceil(need/s)+1):0, N=n+2*Rs;
+  let dL=null,dW=null;
+  if(needNb&&Rs>0){ const INF=1e9, ty=new Uint8Array(N*N); dL=new Float32Array(N*N).fill(INF); dW=new Float32Array(N*N).fill(INF);
+    for(let j=0;j<N;j++) for(let i=0;i<N;i++){ const q=at((i-Rs)*s,(j-Rs)*s); const cell=(!q||!has[q])?0:(kind[q]===0?1:2); ty[j*N+i]=cell; if(cell===1) dL[j*N+i]=0; else if(cell===2) dW[j*N+i]=0; }
+    const ch=(a)=>{ for(let j=0;j<N;j++) for(let i=0;i<N;i++){ const o=j*N+i; let v=a[o]; if(i>0){ const t=a[o-1]+1; if(t<v) v=t; if(j>0){ const t2=a[o-N-1]+1.414; if(t2<v) v=t2; } } if(j>0){ const t=a[o-N]+1; if(t<v) v=t; if(i<N-1){ const t2=a[o-N+1]+1.414; if(t2<v) v=t2; } } a[o]=v; }
+      for(let j=N-1;j>=0;j--) for(let i=N-1;i>=0;i--){ const o=j*N+i; let v=a[o]; if(i<N-1){ const t=a[o+1]+1; if(t<v) v=t; if(j<N-1){ const t2=a[o+N+1]+1.414; if(t2<v) v=t2; } } if(j<N-1){ const t=a[o+N]+1; if(t<v) v=t; if(i>0){ const t2=a[o+N-1]+1.414; if(t2<v) v=t2; } } a[o]=v; } };
+    ch(dL); ch(dW); }
+  let landAvg=[120,130,90], seaAvg=[20,50,84]; { let lr=0,lg=0,lb=0,ln=0,sr=0,sg=0,sb=0,sn=0; for(let rid=1;rid<256;rid++){ if(!has[rid]) continue; if(kind[rid]===0){ lr+=lut[rid*3]; lg+=lut[rid*3+1]; lb+=lut[rid*3+2]; ln++; } else if(kind[rid]===1){ sr+=lut[rid*3]; sg+=lut[rid*3+1]; sb+=lut[rid*3+2]; sn++; } } if(ln) landAvg=[lr/ln,lg/ln,lb/ln]; if(sn) seaAvg=[sr/sn,sg/sn,sb/sn]; }
+  const pg=({none:0,weak:0.04,mid:0.08,strong:0.14})[S.paper.grain], pu=S.paper.unevenness, paperOn=pg>0||pu>0, wgap=S.sea.waveGap, wph=(sd%97)*0.37;
+  const coastW=S.coast.width, coastS=S.coast.strength, cm=S.coast.mode, sm=S.sea.mode, srange=S.sea.depthRange;
+  const mix=(a,b,t)=>a+(b-a)*t;
+  for(let py=0;py<n;py++){ const y=py*s;
+    for(let px=0;px<n;px++){
+      const x=px*s, idx=(y<<8)|x, v=tile[idx], o=(py*n+px)*4, X=ox+x, Y=oy+y;
+      if(X>=W_||Y>=H_) continue;
+      let r,g,b;
+      if(!v||!has[v]){ r=bc[0]; g=bc[1]; b=bc[2]; }
+      else {
+        const k=kind[v]; r=lut[v*3]; g=lut[v*3+1]; b=lut[v*3+2];
+        const kd=tk[v];
+        if(kd&&ts[v]>0){ let nz; const z=tz[v]; if(kd===1) nz=h2(X,Y,sd+11)-0.5; else if(kd===2) nz=vnoise(X/(z*4),Y/(z*0.7),sd+13)-0.5; else nz=vnoise(X/z,Y/z,sd+17)-0.5; const f=1+nz*2*ts[v]*0.35; r*=f; g*=f; b*=f; }
+        if(elevTile){ const el=elevTile[idx];
+          if(el){ const eL=elevTile[x>=s?idx-s:idx], eU=elevTile[y>=s?idx-(s<<8):idx];
+            if(emode==='bands'){ if(!k){ const bcol=elevBandColor(el); r=r*0.5+bcol[0]*0.5; g=g*0.5+bcol[1]*0.5; b=b*0.5+bcol[2]*0.5; } }
+            else { let sh=shadeFn(el-eL,el-eU); sh=sh<-45?-45:sh>45?45:sh; sh*=0.7; const lift=el*0.05; r+=sh+lift; g+=sh+lift; b+=sh+lift*0.8; } } }
+        const ci=dL?((py+Rs)*N+(px+Rs)):0;
+        if(k===1){
+          if(sm==='depth'&&dL){ const t=Math.min(1,(dL[ci]*s)/srange); r=mix(shc[0],offc[0],t); g=mix(shc[1],offc[1],t); b=mix(shc[2],offc[2],t); }
+          else if(sm==='waves'){ const yy=Y+Math.round(2.2*Math.sin(X/(wgap*2.3)+wph)); if(((yy%wgap)+wgap)%wgap===0){ r=mix(r,wvc[0],0.55); g=mix(g,wvc[1],0.55); b=mix(b,wvc[2],0.55); } }
+        }
+        if(dL&&cm!=='none'&&coastW>0){
+          if(cm==='outline'){ if(k===0&&dW[ci]*s<=coastW){ r=cc[0]; g=cc[1]; b=cc[2]; } }
+          else if(cm==='glow'){ if(k!==0){ const dd=dL[ci]*s; if(dd<=coastW){ const a=coastS*(1-dd/coastW); r=mix(r,cc[0],a); g=mix(g,cc[1],a); b=mix(b,cc[2],a); } } }
+          else if(cm==='fade'){ if(k===0){ const dd=dW[ci]*s; if(dd<coastW){ const a=0.5*(1-dd/coastW); r=mix(r,seaAvg[0],a); g=mix(g,seaAvg[1],a); b=mix(b,seaAvg[2],a); } } else { const dd=dL[ci]*s; if(dd<coastW){ const a=0.35*(1-dd/coastW); r=mix(r,landAvg[0],a); g=mix(g,landAvg[1],a); b=mix(b,landAvg[2],a); } } }
+        }
+      }
+      if(paperOn){ const f=1+(h2(X,Y,sd+3)-0.5)*2*pg+(fbm(X,Y,sd+5)-0.5)*pu*0.6; r*=f; g*=f; b*=f; }
+      d[o]=r<0?0:r>255?255:r; d[o+1]=g<0?0:g>255?255:g; d[o+2]=b<0?0:b>255?255:b; d[o+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0); e.lods[ck]=c; return c;
+}
+/* 格子・周辺の減光・装飾(方位記号・縁の枠)。ctx は地図の座標(拡大 kx,ky)。flags.nodeco: 3D地球儀などでは、周辺の減光・装飾を付けない */
+function msOverlay(ctx,S,mw,mh,kx,ky,rx0,ry0,rx1,ry1,flags){
+  flags=flags||{}; const kk=Math.max(1e-6,kx);
+  if(S.grid.on&&S.grid.opacity>0){ const g=S.grid.gap, x0=Math.max(0,Math.floor(rx0/g)*g), x1=Math.min(mw,rx1), y0=Math.max(0,Math.floor(ry0/g)*g), y1=Math.min(mh,ry1);
+    if((x1-x0)/g+(y1-y0)/g<=1200){ ctx.save(); ctx.globalAlpha=S.grid.opacity; ctx.strokeStyle=S.grid.color; ctx.lineWidth=1/kk; ctx.beginPath(); for(let x=x0;x<=x1;x+=g){ ctx.moveTo(x,Math.max(0,ry0)); ctx.lineTo(x,Math.min(mh,ry1)); } for(let y=y0;y<=y1;y+=g){ ctx.moveTo(Math.max(0,rx0),y); ctx.lineTo(Math.min(mw,rx1),y); } ctx.stroke(); ctx.restore(); } }
+  if(flags.nodeco) return;
+  if(S.vignette.strength>0){ ctx.save(); const gr=ctx.createRadialGradient(mw/2,mh/2,Math.min(mw,mh)*0.25,mw/2,mh/2,Math.hypot(mw,mh)/2); gr.addColorStop(0,'rgba(0,0,0,0)'); gr.addColorStop(1,'rgba(0,0,0,'+(0.75*S.vignette.strength)+')'); ctx.fillStyle=gr; ctx.fillRect(0,0,mw,mh); ctx.restore(); }
+  if(S.decor.frame.on){ ctx.save(); ctx.strokeStyle=S.decor.frame.color; ctx.lineWidth=4/kk; ctx.strokeRect(2/kk,2/kk,mw-4/kk,mh-4/kk); ctx.lineWidth=1/kk; ctx.strokeRect(8/kk,8/kk,mw-16/kk,mh-16/kk); ctx.restore(); }
+  if(S.decor.compass.on){ const sz=Math.min(S.decor.compass.size/kk,Math.min(mw,mh)*0.35), cx=mw-sz*0.62-14/kk, cy=mh-sz*0.62-14/kk, R=sz*0.5; ctx.save(); ctx.translate(cx,cy); ctx.strokeStyle=S.label.color; ctx.fillStyle=S.label.color; ctx.lineWidth=1.4/kk; ctx.beginPath(); ctx.arc(0,0,R*0.62,0,Math.PI*2); ctx.stroke();
+    for(let i=0;i<4;i++){ ctx.save(); ctx.rotate(i*Math.PI/2); ctx.beginPath(); ctx.moveTo(0,-R); ctx.lineTo(R*0.16,-R*0.2); ctx.lineTo(-R*0.16,-R*0.2); ctx.closePath(); if(i===0) ctx.fill(); else ctx.stroke(); ctx.restore(); }
+    ctx.font=(R*0.34)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.lineWidth=2.4/kk; ctx.strokeStyle=S.label.strokeColor; ctx.strokeText('N',0,-R-R*0.26); ctx.fillText('N',0,-R-R*0.26); ctx.restore(); }
+}
 const PAPER_EMPTY=new Uint8Array(65536);   /* タイルが無い所にも、古地図の紙を敷くための空のタイル */
 /* ---- 衛星風 ---- */
 function satPaint(E){
@@ -15337,7 +15618,7 @@ function mapDisp(w){
     style:styleOf(w), mono:monoOf(w), satSeed:satSeedOf(w), sopt:styleOpts(w)};   /* v36: 表示スタイル(既定は標準) */
 }
 function elevLt(w){ const d=mapDisp(w); return {az:d.lightAz,alt:d.lightAlt,tex:d.texture==='on'}; }
-function elevLightKey(w){ const d=mapDisp(w); return [d.elevation?d.elevMode:'off',d.lightAz,d.lightAlt,d.contour?d.contourStep:0,d.texture,d.style,JSON.stringify(d.mono),d.style==='satellite'?d.satSeed:0,JSON.stringify(d.sopt)].join('|'); }
+function elevLightKey(w){ const d=mapDisp(w); return [d.elevation?d.elevMode:'off',d.lightAz,d.lightAlt,d.contour?d.contourStep:0,d.texture,d.style,JSON.stringify(d.mono),d.style==='satellite'?d.satSeed:0,JSON.stringify(d.sopt),msKeyOf(customStyleOf(w))].join('|'); }
 /* 陰影の係数。既定(方位315°=北西・高度45°)は従来の式と完全に同じ */
 function elevShadeFn(lt){
   const az=lt?lt.az:315, alt=lt?lt.alt:45; if(az===315&&alt===45) return (gx,gy)=>(gx+gy)*0.9;
@@ -15434,7 +15715,7 @@ document.addEventListener('change',(ev)=>{
 function mapStyleHtml(d){
   const w=W(); const ro=!!(w&&w.readOnly)||(typeof roleHasPerm==='function'&&!roleHasPerm('display')); const dis=ro?'disabled':'';
   const shownMono=(k)=>{ if(d.mono[k]) return d.mono[k]; const code=k==='sea'?1:k==='lake'?2:0; const t=(w.terrainTypes||[]).find(t=>SPal.sig!==undefined&&((t.isOcean&&!(t.id==='lake'||t.name==='湖'))?1:(t.id==='lake'||t.name==='湖')?2:0)===code); return (t&&HEX6.test(t.color))?t.color:MONO_DEFAULT[k]; };
-  let h=`<div class="lp-row"><span>表示スタイル</span><select data-mstyle="style" ${dis}>${MAP_STYLES.map(([id,nm])=>`<option value="${id}" ${d.style===id?'selected':''}>${nm}</option>`).join('')}</select></div>
+  let h=`<div class="lp-row"><span>表示スタイル</span><select data-mstyle="style" ${dis}>${MAP_STYLES.map(([id,nm])=>`<option value="${id}" ${d.style===id?'selected':''}>${nm}</option>`).join('')}${msAll(w).filter(s=>!s.builtin).map(s=>`<option value="${esc(s.id)}" ${((w.mapDisplay||{}).style===s.id)?'selected':''}>${esc(s.name)}(自分のスタイル)</option>`).join('')}</select> <button class="btn small" data-mstyle="manage">スタイルを管理…</button></div>
     <div class="lp-note">地形の描き方だけを変えます(表示だけで、地形・国家・都市のデータは変わりません)。国境・都市・ラベルは、どのスタイルでも上に重なります。3D地球儀にも同じスタイルが反映されます(「3D変換 / 更新」を押さなくても、地球儀を開くと自動で描き直されます)。</div>`;
   if(d.style==='mono'){
     h+=MONO_KINDS.map(([k,nm])=>`<div class="lp-row" style="margin-left:22px;"><span>${nm}の色</span><input type="color" data-mstyle="mono-${k}" value="${shownMono(k)}" ${dis}><button class="btn small" data-mstyle="reset-${k}" ${dis}>元の地形の色に戻す</button></div>`).join('')
@@ -15476,7 +15757,7 @@ function mapStyleMutate(summary, fn){
 }
 document.addEventListener('change',(ev)=>{
   const t=ev.target; if(!t||!t.matches||!t.matches('[data-mstyle]')) return; const kind=t.dataset.mstyle;
-  if(kind==='style'){ const v=MAP_STYLES.some(s=>s[0]===t.value)?t.value:'standard';
+  if(kind==='style'){ const v=MAP_STYLES.some(s=>s[0]===t.value)?t.value:(msIsCustomId(t.value)&&msAll(W()).some(s=>s.id===t.value))?t.value:'standard';
     mapStyleMutate('地図の表示スタイル',(d,w)=>{ d.style=v; if(v==='mono'){ const m=monoOf(w); if(!m.land&&!m.sea&&!m.lake) d.mono=Object.assign({},MONO_DEFAULT); } if(v==='satellite'&&!Number.isInteger(d.satSeed)) d.satSeed=satSeedDefault(w); }); }
   else if(kind==='wrapx'){ const v=!!t.checked; mapStyleMutate('左右の端をつなげる(地図の表示)',(d)=>{ d.wrapX=v; }); }
   else if(kind==='sat-strength'){ const v=STRENGTHS.some(x=>x[0]===t.value)?t.value:'mid'; mapStyleMutate('衛星風の模様の強さ',(d)=>{ d.satStrength=v; }); }
@@ -15493,6 +15774,7 @@ document.addEventListener('click',(ev)=>{
   if(/^reset-(land|sea|lake|all)$/.test(kind)){ const k=kind.slice(6);
     mapStyleMutate('単色表示の色を元の地形の色に戻す',(d)=>{ d.mono=Object.assign({land:'',sea:'',lake:''},d.mono||{}); if(k==='all'){ d.mono={land:'',sea:'',lake:''}; } else d.mono[k]=''; }); }
   else if(kind==='wrap-preview'){ wrapPreviewOpen(); }
+  else if(kind==='manage'){ msManage(); }
   else if(kind==='par-paper-reset'){ mapStyleMutate('古地図風の紙の色を既定に戻す',(d)=>{ d.parPaper=''; }); }
   else if(kind==='par-seed'){ mapStyleMutate('古地図風の種を変更',(d,w)=>{ let n; do{ n=Math.floor(Math.random()*1000000); }while(n===styleOpts(w).parSeed); d.parSeed=n; }); }
   else if(kind==='seed'){ mapStyleMutate('衛星風の模様の種を変更',(d,w)=>{ let n; do{ n=Math.floor(Math.random()*1000000); }while(n===satSeedOf(w)); d.satSeed=n; }); }
